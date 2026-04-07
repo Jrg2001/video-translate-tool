@@ -1,13 +1,29 @@
-import subprocess
+﻿import subprocess
 import os
 from openai import OpenAI
 import whisper
 from datetime import timedelta
 
+def load_env_file(env_path=".env"):
+    if not os.path.exists(env_path):
+        return
+
+    with open(env_path, "r", encoding="utf-8") as env_file:
+        for raw_line in env_file:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip())
+
+
 class VideoTranslatorBurn:
     """硬字幕版本 - 将中文字幕直接烧录进视频画面像素中，适用于上传B站等平台"""
     
     def __init__(self, input_video, target_language="zh"):
+        load_env_file()
+
         self.input_video = input_video
         self.target_language = target_language
         self.srt_path = "temp_subtitle.srt"
@@ -16,11 +32,15 @@ class VideoTranslatorBurn:
         filename, ext = os.path.splitext(input_video)
         self.output_video = f"{filename}_{target_language}_burn.mp4"
 
-        # FFmpeg 绝对路径
-        self.ffmpeg_exe = r"D:\OneDrive\桌面\ffmpeg\ffmpeg-7.1.1-full_build\ffmpeg-7.1.1-full_build\bin\ffmpeg.exe"
+        # 直接使用系统 PATH 中的 ffmpeg
+        self.ffmpeg_exe = "ffmpeg"
+
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        if not api_key:
+            raise ValueError("缺少 DEEPSEEK_API_KEY。请在当前目录的 .env 文件中配置该密钥。")
 
         self.client = OpenAI(
-            api_key="REDACTED_DEEPSEEK_API_KEY", 
+            api_key=api_key,
             base_url="https://api.deepseek.com/v1"
         )
 
