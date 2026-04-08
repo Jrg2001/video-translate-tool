@@ -2,6 +2,7 @@
 import os
 import json
 import tempfile
+import jieba
 from openai import OpenAI
 import whisper
 from datetime import timedelta
@@ -63,7 +64,11 @@ class VideoTranslatorBurn:
 
     def step1_transcribe(self):
         print("[步骤 1/4]: 正在使用已加载的 Whisper 模型识别语音...")
-        result = self.whisper_model.transcribe(self.input_video, task="transcribe")
+        result = self.whisper_model.transcribe(
+            self.input_video,
+            task="transcribe",
+            word_timestamps=True
+        )
         
         segments = result["segments"]
         print(f" -> 语音识别完成，共获取到 {len(segments)} 句话")
@@ -77,6 +82,157 @@ class VideoTranslatorBurn:
 
     def _format_sentence_numbers(self, sentence_numbers):
         return "、".join(str(number) for number in sentence_numbers)
+
+    def _tokenize_subtitle_text(self, text):
+        tokens = []
+        for token in jieba.lcut(text, cut_all=False):
+            cleaned = token.strip()
+            if cleaned:
+                tokens.append(cleaned)
+        return tokens
+
+    def _normalize_subtitle_text(self, text):
+        return " ".join(text.strip().split())
+
+    def _group_translation_tokens(self, tokens, target_chars=14, max_chars=18):
+        chunks = []
+        current_tokens = []
+        current_length = 0
+        punctuation_tokens = {"，", "。", "；", "！", "？", "、", "："}
+
+        for token in tokens:
+            token_length = len(token)
+
+            if current_tokens and current_length + token_length > max_chars:
+                chunks.append("".join(current_tokens))
+                current_tokens = [token]
+                current_length = token_length
+                continue
+
+            current_tokens.append(token)
+            current_length += token_length
+
+            if current_length >= target_chars and token in punctuation_tokens:
+                chunks.append("".join(current_tokens))
+                current_tokens = []
+                current_length = 0
+
+        if current_tokens:
+            chunks.append("".join(current_tokens))
+
+        merged_chunks = []
+        for chunk in chunks:
+            if merged_chunks and len(chunk) < 4:
+                merged_chunks[-1] += chunk
+            else:
+                merged_chunks.append(chunk)
+
+        if len(merged_chunks) >= 2 and len(merged_chunks[-1]) < 4:
+            merged_chunks[-2] += merged_chunks[-1]
+            merged_chunks.pop()
+
+        return [chunk for chunk in merged_chunks if chunk]
+
+    def _assign_chunk_timestamps(self, original_segment, chunk_texts):
+        if not chunk_texts:
+            return []
+
+        segment_start = original_segment["start"]
+        segment_end = original_segment["end"]
+        duration = max(segment_end - segment_start, 0.01)
+        words = original_segment.get("words") or []
+
+        if len(chunk_texts) == 1:
+            return [(segment_start, segment_end)]
+
+        if not words:
+            total_chars = sum(len(text) for text in chunk_texts)
+            current_start = segment_start
+            ranges = []
+            for index, text in enumerate(chunk_texts):
+                if index == len(chunk_texts) - 1:
+                    current_end = segment_end
+                else:
+                    ratio = len(text) / total_chars if total_chars else 1 / len(chunk_texts)
+                    current_end = current_start + duration * ratio
+                ranges.append((current_start, current_end))
+                current_start = current_end
+            return ranges
+
+        total_chars = sum(len(text) for text in chunk_texts)
+        total_words = len(words)
+        boundaries = [0]
+        consumed_chars = 0
+
+        for text in chunk_texts[:-1]:
+            consumed_chars += len(text)
+            ratio = consumed_chars / total_chars if total_chars else 0
+            boundary = round(ratio * total_words)
+            boundary = max(boundaries[-1] + 1, boundary)
+            boundary = min(boundary, total_words - (len(chunk_texts) - len(boundaries)))
+            boundaries.append(boundary)
+        boundaries.append(total_words)
+
+        ranges = []
+        for index in range(len(chunk_texts)):
+            start_word_index = boundaries[index]
+            end_word_index = boundaries[index + 1] - 1
+            start_time = words[start_word_index].get("start", segment_start)
+            end_time = words[end_word_index].get("end", segment_end)
+            ranges.append((start_time, end_time))
+
+        adjusted_ranges = []
+        min_duration = 0.8
+        for index, (start_time, end_time) in enumerate(ranges):
+            start_time = max(start_time, segment_start)
+            end_time = min(end_time, segment_end)
+            if index > 0:
+                start_time = max(start_time, adjusted_ranges[-1][1])
+            if end_time <= start_time:
+                end_time = min(segment_end, start_time + 0.05)
+            adjusted_ranges.append((start_time, end_time))
+
+        if duration >= len(adjusted_ranges) * min_duration:
+            for index in range(len(adjusted_ranges) - 1):
+                start_time, end_time = adjusted_ranges[index]
+                if end_time - start_time < min_duration:
+                    new_end = min(segment_end, start_time + min_duration)
+                    adjusted_ranges[index] = (start_time, new_end)
+                    next_start, next_end = adjusted_ranges[index + 1]
+                    adjusted_ranges[index + 1] = (max(new_end, next_start), next_end)
+
+        adjusted_ranges[-1] = (adjusted_ranges[-1][0], segment_end)
+        return adjusted_ranges
+
+    def _split_translated_segment(self, original_segment, translated_text):
+        normalized = self._normalize_subtitle_text(translated_text)
+        tokens = self._tokenize_subtitle_text(normalized)
+        chunk_texts = self._group_translation_tokens(tokens)
+
+        if not chunk_texts:
+            return [{
+                "start": original_segment["start"],
+                "end": original_segment["end"],
+                "text": normalized,
+            }]
+
+        time_ranges = self._assign_chunk_timestamps(original_segment, chunk_texts)
+        subtitle_chunks = []
+        for chunk_text, (start_time, end_time) in zip(chunk_texts, time_ranges):
+            subtitle_chunks.append({
+                "start": start_time,
+                "end": end_time,
+                "text": chunk_text,
+            })
+        return subtitle_chunks
+
+    def _build_subtitle_chunks(self, translated_segments):
+        subtitle_chunks = []
+        for segment in translated_segments:
+            subtitle_chunks.extend(
+                self._split_translated_segment(segment, segment["text"])
+            )
+        return subtitle_chunks
 
     def _parse_batch_translation(self, content):
         cleaned = content.strip()
@@ -194,7 +350,8 @@ class VideoTranslatorBurn:
                 translated_segments.append({
                     "start": segment["start"],
                     "end": segment["end"],
-                    "text": trans_text.strip()
+                    "text": trans_text.strip(),
+                    "words": segment.get("words", [])
                 })
 
             translated_count = len(translated_segments)
@@ -206,7 +363,7 @@ class VideoTranslatorBurn:
 
         return translated_segments
 
-    def step3_generate_srt(self, translated_segments):
+    def step3_generate_srt(self, subtitle_chunks):
         print("[步骤 3/4]: 正在生成 .srt 字幕文件...")
         
         def format_timestamp(seconds: float):
@@ -218,10 +375,10 @@ class VideoTranslatorBurn:
             return f"{hours:02d}:{minutes:02d}:{secs:02d},{milliseconds:03d}"
             
         with open(self.srt_path, "w", encoding="utf-8") as f:
-            for idx, segment in enumerate(translated_segments):
+            for idx, segment in enumerate(subtitle_chunks):
                 start_time = format_timestamp(segment["start"])
                 end_time = format_timestamp(segment["end"])
-                text = segment["text"]
+                text = self._normalize_subtitle_text(segment["text"])
                 
                 f.write(f"{idx + 1}\n")
                 f.write(f"{start_time} --> {end_time}\n")
@@ -267,7 +424,8 @@ class VideoTranslatorBurn:
         try:
             segments = self.step1_transcribe()
             translated_segments = self.step2_translate(segments)
-            self.step3_generate_srt(translated_segments)
+            subtitle_chunks = self._build_subtitle_chunks(translated_segments)
+            self.step3_generate_srt(subtitle_chunks)
             self.step4_burn_subtitles()
             print("🎉 所有步骤成功结束！")
         finally:
