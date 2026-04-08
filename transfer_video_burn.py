@@ -1,6 +1,7 @@
 ﻿import subprocess
 import os
 import json
+import tempfile
 from openai import OpenAI
 import whisper
 from datetime import timedelta
@@ -22,14 +23,14 @@ def load_env_file(env_path=".env"):
 class VideoTranslatorBurn:
     """硬字幕版本 - 将中文字幕直接烧录进视频画面像素中"""
     
-    def __init__(self, input_video, target_language="zh", batch_size=20, verbose=False):
+    def __init__(self, input_video, target_language="zh", batch_size=10, verbose=False):
         load_env_file()
 
         self.input_video = input_video
         self.target_language = target_language
         self.batch_size = batch_size
         self.verbose = verbose
-        self.srt_path = "temp_subtitle.srt"
+        self.srt_path = self._create_temp_srt_path()
         
         # 硬烧字幕会重新编码，输出为 mp4 格式（B站推荐格式）
         filename, ext = os.path.splitext(input_video)
@@ -47,6 +48,18 @@ class VideoTranslatorBurn:
             base_url="https://api.deepseek.com/v1"
         )
         self.whisper_model = whisper.load_model("small")
+
+    def _create_temp_srt_path(self):
+        input_dir = os.path.dirname(os.path.abspath(self.input_video)) or os.getcwd()
+        filename, _ = os.path.splitext(os.path.basename(self.input_video))
+        temp_file = tempfile.NamedTemporaryFile(
+            prefix=f"{filename}_",
+            suffix=".srt",
+            dir=input_dir,
+            delete=False,
+        )
+        temp_file.close()
+        return temp_file.name
 
     def step1_transcribe(self):
         print("[步骤 1/4]: 正在使用已加载的 Whisper 模型识别语音...")
@@ -217,7 +230,7 @@ class VideoTranslatorBurn:
         print(" -> 字幕文件生成完成!")
 
     def step4_burn_subtitles(self):
-        print("[步骤 4/4]: 正在将字幕烧录进视频（硬字幕模式，适合B站上传）...")
+        print("[步骤 4/4]: 正在将字幕烧录进视频（硬字幕模式")
         print(" ⏳ 提示：硬烧字幕需要重新编码视频，视频越长/分辨率越高耗时越久，请耐心...")
         
         # FFmpeg 的 subtitles 滤镜在 Windows 上需要特殊处理路径：
@@ -247,19 +260,19 @@ class VideoTranslatorBurn:
             self.output_video
         ]
         
-        subprocess.run(command)
+        subprocess.run(command, check=True)
         print(f" -> 硬字幕烧录完成! 输出文件: {self.output_video}")
 
     def process(self):
-        segments = self.step1_transcribe()
-        translated_segments = self.step2_translate(segments)
-        self.step3_generate_srt(translated_segments)
-        self.step4_burn_subtitles()
-        
-        if os.path.exists(self.srt_path):
-            os.remove(self.srt_path)
-            
-        print("🎉 所有步骤成功结束！")
+        try:
+            segments = self.step1_transcribe()
+            translated_segments = self.step2_translate(segments)
+            self.step3_generate_srt(translated_segments)
+            self.step4_burn_subtitles()
+            print("🎉 所有步骤成功结束！")
+        finally:
+            if os.path.exists(self.srt_path):
+                os.remove(self.srt_path)
 
 if __name__ == "__main__":
     video_file = "d:/transfer/test_video.mp4" 
