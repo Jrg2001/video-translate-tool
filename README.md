@@ -32,6 +32,19 @@ streamlit run app.py
 
 In the Streamlit sidebar, set `Output Directory` to a folder such as `D:\transfer\outputs` or `D:\`.
 
+## Supported Target Languages
+
+- Chinese (Simplified)
+- English
+- Japanese
+- Korean
+
+In bilingual mode, the first line stays as the source subtitle and the second line is translated into the selected target language.
+
+Non-Chinese target languages use a simpler first-pass chunking strategy focused on stability and readable subtitle lengths.
+
+Soft subtitle outputs write subtitle language metadata based on the selected target language.
+
 ## Subtitle Style In The UI
 
 The Streamlit sidebar supports these subtitle style settings:
@@ -55,3 +68,4 @@ If the selected font is not installed on the system, FFmpeg may fall back to a d
 - Bilingual subtitles with source text on top and translated text below
 - Burned subtitle video output
 - Soft subtitle video output
+- Target language support for Chinese, English, Japanese, and Korean

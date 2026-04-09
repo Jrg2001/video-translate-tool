@@ -12,6 +12,34 @@ import whisper
 from openai import OpenAI
 
 
+LANGUAGE_CONFIG = {
+    "zh": {
+        "label": "Chinese (Simplified)",
+        "translation_prompt": "natural Simplified Chinese",
+        "subtitle_language_code": "chi",
+        "tokenizer": "jieba",
+    },
+    "en": {
+        "label": "English",
+        "translation_prompt": "natural English",
+        "subtitle_language_code": "eng",
+        "tokenizer": "whitespace",
+    },
+    "ja": {
+        "label": "Japanese",
+        "translation_prompt": "natural Japanese",
+        "subtitle_language_code": "jpn",
+        "tokenizer": "char",
+    },
+    "ko": {
+        "label": "Korean",
+        "translation_prompt": "natural Korean",
+        "subtitle_language_code": "kor",
+        "tokenizer": "char",
+    },
+}
+
+
 def load_env_file(env_path=".env"):
     if not os.path.exists(env_path):
         return
@@ -78,6 +106,8 @@ class SubtitlePipeline:
         load_env_file()
 
         self.config = config
+        if self.config.target_language not in LANGUAGE_CONFIG:
+            self.config.target_language = "zh"
         self.log_hook = log_hook
         self.logs: list[str] = []
 
@@ -163,6 +193,21 @@ class SubtitlePipeline:
     def _normalize_text(self, text: str) -> str:
         return " ".join(text.strip().split())
 
+    def _get_language_config(self, language_code: str) -> dict:
+        return LANGUAGE_CONFIG.get(language_code, LANGUAGE_CONFIG["zh"])
+
+    def _build_translation_prompt(self) -> str:
+        language_profile = self._get_language_config(self.config.target_language)
+        return (
+            "You are a video subtitle translator. "
+            f"Translate the text into {language_profile['translation_prompt']} "
+            "and return only the translation."
+        )
+
+    def _get_soft_subtitle_language_code(self) -> str:
+        language_profile = self._get_language_config(self.config.target_language)
+        return language_profile.get("subtitle_language_code", "und")
+
     def _summarize_text(self, text: str, max_length: int = 50) -> str:
         normalized = self._normalize_text(text)
         if len(normalized) <= max_length:
@@ -170,18 +215,59 @@ class SubtitlePipeline:
         return normalized[: max_length - 3] + "..."
 
     def _tokenize_target_text(self, text: str) -> list[str]:
-        return [token.strip() for token in jieba.lcut(text, cut_all=False) if token.strip()]
+        language_profile = self._get_language_config(self.config.target_language)
+        tokenizer = language_profile["tokenizer"]
+
+        if tokenizer == "jieba":
+            return [token.strip() for token in jieba.lcut(text, cut_all=False) if token.strip()]
+        if tokenizer == "whitespace":
+            return [token for token in text.split() if token]
+        return [char for char in text if not char.isspace()]
 
     def _join_source_words(self, words: list[str]) -> str:
         joined = " ".join(word for word in words if word)
         joined = re.sub(r"\s+([,.!?;:])", r"\1", joined)
         return joined.strip()
 
-    def _group_translation_tokens(self, tokens: list[str], target_chars=14, max_chars=18) -> list[str]:
+    def _group_translation_tokens(self, tokens: list[str]) -> list[str]:
+        language_profile = self._get_language_config(self.config.target_language)
+        tokenizer = language_profile["tokenizer"]
+
+        if tokenizer == "whitespace":
+            return self._group_whitespace_tokens(tokens)
+        if tokenizer == "char":
+            return self._group_character_tokens(tokens, target_chars=18, max_chars=24)
+        return self._group_character_tokens(tokens, target_chars=14, max_chars=18)
+
+    def _group_whitespace_tokens(self, tokens: list[str], target_words: int = 7, max_chars: int = 42) -> list[str]:
+        chunks: list[str] = []
+        current_tokens: list[str] = []
+        punctuation_suffixes = (".", ",", "!", "?", ";", ":")
+
+        for token in tokens:
+            candidate_tokens = current_tokens + [token]
+            candidate_text = " ".join(candidate_tokens)
+
+            if current_tokens and len(candidate_text) > max_chars:
+                chunks.append(" ".join(current_tokens))
+                current_tokens = [token]
+                continue
+
+            current_tokens = candidate_tokens
+            if len(current_tokens) >= target_words and token.endswith(punctuation_suffixes):
+                chunks.append(" ".join(current_tokens))
+                current_tokens = []
+
+        if current_tokens:
+            chunks.append(" ".join(current_tokens))
+
+        return self._merge_short_chunks(chunks, min_length=8, separator=" ")
+
+    def _group_character_tokens(self, tokens: list[str], target_chars: int, max_chars: int) -> list[str]:
         chunks: list[str] = []
         current_tokens: list[str] = []
         current_length = 0
-        punctuation_tokens = {"，", "。", "；", "！", "？", "、", "："}
+        punctuation_tokens = {"，", "。", "！", "？", "；", "：", "、", ",", ".", "!", "?", ";", ":"}
 
         for token in tokens:
             token_length = len(token)
@@ -203,15 +289,18 @@ class SubtitlePipeline:
         if current_tokens:
             chunks.append("".join(current_tokens))
 
+        return self._merge_short_chunks(chunks, min_length=4, separator="")
+
+    def _merge_short_chunks(self, chunks: list[str], min_length: int, separator: str) -> list[str]:
         merged_chunks: list[str] = []
         for chunk in chunks:
-            if merged_chunks and len(chunk) < 4:
-                merged_chunks[-1] += chunk
+            if merged_chunks and len(chunk) < min_length:
+                merged_chunks[-1] = f"{merged_chunks[-1]}{separator}{chunk}".strip()
             else:
                 merged_chunks.append(chunk)
 
-        if len(merged_chunks) >= 2 and len(merged_chunks[-1]) < 4:
-            merged_chunks[-2] += merged_chunks[-1]
+        if len(merged_chunks) >= 2 and len(merged_chunks[-1]) < min_length:
+            merged_chunks[-2] = f"{merged_chunks[-2]}{separator}{merged_chunks[-1]}".strip()
             merged_chunks.pop()
 
         return [chunk for chunk in merged_chunks if chunk]
@@ -325,7 +414,7 @@ class SubtitlePipeline:
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a video subtitle translator. Translate the text into natural Simplified Chinese and return only the translation.",
+                    "content": self._build_translation_prompt(),
                 },
                 {"role": "user", "content": text.strip()},
             ],
@@ -339,6 +428,7 @@ class SubtitlePipeline:
             for index, segment in enumerate(batch_segments)
         ]
         payload = json.dumps(batch_items, ensure_ascii=False)
+        language_profile = self._get_language_config(self.config.target_language)
 
         response = self.client.chat.completions.create(
             model="deepseek-chat",
@@ -347,7 +437,7 @@ class SubtitlePipeline:
                     "role": "system",
                     "content": (
                         "You are a video subtitle translator. "
-                        "Translate each JSON object item into natural Simplified Chinese. "
+                        f"Translate each JSON object item into {language_profile['translation_prompt']}. "
                         "Each object contains id and text. "
                         "Return a JSON object array with id and translation for every item. "
                         "Do not omit items. Do not return Markdown, code fences, or explanations."
@@ -384,7 +474,8 @@ class SubtitlePipeline:
         return {"translations": translations, "missing_ids": missing_ids}
 
     def translate(self, segments: list[dict]) -> list[dict]:
-        self._log("[Step 2/4] Translating subtitles in batches...")
+        language_label = self._get_language_config(self.config.target_language)["label"]
+        self._log(f"[Step 2/4] Translating subtitles in batches to {language_label}...")
         translated_segments: list[dict] = []
         total_segments = len(segments)
         total_batches = (total_segments + self.config.batch_size - 1) // self.config.batch_size
@@ -433,7 +524,6 @@ class SubtitlePipeline:
         return translated_segments
 
     def _split_translated_segment(self, segment: dict) -> list[dict]:
-        source_text = self._normalize_text(segment["source_text"])
         translated_text = self._normalize_text(segment["translated_text"])
         tokens = self._tokenize_target_text(translated_text)
         chunk_texts = self._group_translation_tokens(tokens)
@@ -473,7 +563,11 @@ class SubtitlePipeline:
         words = segment.get("words") or []
 
         if words:
-            source_tokens = [self._normalize_text(word.get("word", "")) for word in words if self._normalize_text(word.get("word", ""))]
+            source_tokens = [
+                self._normalize_text(word.get("word", ""))
+                for word in words
+                if self._normalize_text(word.get("word", ""))
+            ]
             boundaries = self._compute_word_boundaries(len(source_tokens), translated_chunk_texts)
             source_chunk_texts = []
             for index in range(len(translated_chunk_texts)):
@@ -551,7 +645,7 @@ class SubtitlePipeline:
                 "-i", self.output_srt,
                 "-c", "copy",
                 "-c:s", "srt",
-                "-metadata:s:s:0", "language=chi",
+                "-metadata:s:s:0", f"language={self._get_soft_subtitle_language_code()}",
                 self.output_video,
             ]
         else:

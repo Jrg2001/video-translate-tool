@@ -3,7 +3,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from subtitle_pipeline import SubtitleJobConfig, SubtitleStyle, hex_to_ass_colour, run_subtitle_job
+from subtitle_pipeline import LANGUAGE_CONFIG, SubtitleJobConfig, SubtitleStyle, hex_to_ass_colour, run_subtitle_job
 
 
 st.set_page_config(page_title="Video Translate Tool", layout="wide")
@@ -13,7 +13,12 @@ st.caption("Local video translation with single or bilingual subtitle output.")
 
 with st.sidebar:
     st.header("Job Settings")
-    target_language = st.selectbox("Target Language", ["zh"], index=0)
+    target_language = st.selectbox(
+        "Target Language",
+        list(LANGUAGE_CONFIG.keys()),
+        index=0,
+        format_func=lambda code: LANGUAGE_CONFIG[code]["label"],
+    )
     subtitle_mode = st.selectbox(
         "Subtitle Mode",
         [("single", "Single Language"), ("bilingual", "Bilingual (top/bottom)")],
@@ -36,6 +41,7 @@ with st.sidebar:
     outline_width = st.slider("Outline Width", min_value=0, max_value=6, value=2)
     bottom_margin = st.slider("Bottom Margin", min_value=10, max_value=120, value=30)
     st.caption("Style settings apply to burned subtitles. Soft subtitle appearance depends on the video player.")
+    st.caption("Bilingual subtitles use the source text on top and the selected target language on the bottom.")
 
 uploaded_file = st.file_uploader("Upload Video", type=["mp4", "mkv", "mov", "avi", "webm"])
 
