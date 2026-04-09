@@ -75,6 +75,8 @@ result_placeholder = st.empty()
 
 if "job_logs" not in st.session_state:
     st.session_state.job_logs = []
+if "job_result" not in st.session_state:
+    st.session_state.job_result = None
 
 
 def append_log(message: str):
@@ -82,8 +84,72 @@ def append_log(message: str):
     logs_placeholder.code("\n".join(st.session_state.job_logs), language="text")
 
 
+def human_file_size(size_bytes: int) -> str:
+    units = ["B", "KB", "MB", "GB"]
+    size = float(size_bytes)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} {unit}"
+        size /= 1024
+
+
+def render_result_file(label: str, path_value: str | None, mime: str):
+    if not path_value:
+        return
+
+    file_path = Path(path_value)
+    if not file_path.exists():
+        st.warning(f"{label} file not found: {path_value}")
+        return
+
+    file_size = human_file_size(file_path.stat().st_size)
+    st.markdown(f"**{label}**")
+    st.write("Name:", file_path.name)
+    st.write("Size:", file_size)
+    st.code(str(file_path))
+
+    with file_path.open("rb") as file_handle:
+        st.download_button(
+            label=f"Download {label}",
+            data=file_handle.read(),
+            file_name=file_path.name,
+            mime=mime,
+        )
+
+
+def render_job_result():
+    result = st.session_state.job_result
+    if not result:
+        return
+
+    if result["success"]:
+        result_placeholder.success("Completed")
+        output_video_path = Path(result["output_video"]).resolve() if result["output_video"] else None
+        output_subtitle_path = Path(result["output_srt"]).resolve() if result["output_srt"] else None
+        output_directory = None
+        if output_video_path:
+            output_directory = output_video_path.parent
+        elif output_subtitle_path:
+            output_directory = output_subtitle_path.parent
+
+        st.subheader("Outputs")
+        if output_directory:
+            st.write("Output Directory:")
+            st.code(str(output_directory))
+
+        render_result_file("Video", str(output_video_path) if output_video_path else None, "video/mp4")
+        render_result_file("Subtitle", str(output_subtitle_path) if output_subtitle_path else None, "application/x-subrip")
+    else:
+        result_placeholder.error(result["error"] or "Job failed")
+
+
+if st.session_state.job_logs:
+    logs_placeholder.code("\n".join(st.session_state.job_logs), language="text")
+
+
 if st.button("Start", type="primary", disabled=uploaded_file is None):
     st.session_state.job_logs = []
+    st.session_state.job_result = None
     logs_placeholder.empty()
     result_placeholder.empty()
 
@@ -117,9 +183,11 @@ if st.button("Start", type="primary", disabled=uploaded_file is None):
         with st.spinner("Processing video..."):
             result = run_subtitle_job(config, log_hook=append_log)
 
-        if result.success:
-            result_placeholder.success("Completed")
-            st.write("Output Video:", result.output_video)
-            st.write("Output Subtitle:", result.output_srt)
-        else:
-            result_placeholder.error(result.error or "Job failed")
+        st.session_state.job_result = {
+            "success": result.success,
+            "output_video": result.output_video,
+            "output_srt": result.output_srt,
+            "error": result.error,
+        }
+
+render_job_result()
