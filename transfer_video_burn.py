@@ -6,6 +6,7 @@ if __name__ == "__main__":
 
     config = SubtitleJobConfig(
         input_video=video_file,
+        source_language="auto",
         target_language="zh",
         subtitle_mode="single",
         render_mode="burned",
