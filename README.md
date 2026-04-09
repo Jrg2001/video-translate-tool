@@ -39,7 +39,15 @@ In the Streamlit sidebar, set `Output Directory` to a folder such as `D:\transfe
 - Japanese
 - Korean
 
+The UI also supports `Source Language`, with `Auto Detect` as the default option.
+
+Auto Detect uses Whisper language detection, while a manual source language selection overrides the detected result.
+
 In bilingual mode, the first line stays as the source subtitle and the second line is translated into the selected target language.
+
+If the source language matches the target language, bilingual output is automatically downgraded to single-language subtitles to avoid duplicate lines.
+
+If the source language matches the target language, the translation step is skipped and the Whisper transcript is used directly to avoid unnecessary API cost.
 
 Non-Chinese target languages use a simpler first-pass chunking strategy focused on stability and readable subtitle lengths.
 

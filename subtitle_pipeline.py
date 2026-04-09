@@ -39,6 +39,18 @@ LANGUAGE_CONFIG = {
     },
 }
 
+WHISPER_LANGUAGE_MAP = {
+    "zh": "zh",
+    "chinese": "zh",
+    "en": "en",
+    "english": "en",
+    "ja": "ja",
+    "japanese": "ja",
+    "jp": "ja",
+    "ko": "ko",
+    "korean": "ko",
+}
+
 
 def load_env_file(env_path=".env"):
     if not os.path.exists(env_path):
@@ -81,6 +93,7 @@ class SubtitleStyle:
 @dataclass
 class SubtitleJobConfig:
     input_video: str
+    source_language: str = "auto"
     target_language: str = "zh"
     subtitle_mode: str = "bilingual"
     render_mode: str = "burned"
@@ -106,10 +119,17 @@ class SubtitlePipeline:
         load_env_file()
 
         self.config = config
+        if self.config.source_language not in {"auto", *LANGUAGE_CONFIG.keys()}:
+            self.config.source_language = "auto"
         if self.config.target_language not in LANGUAGE_CONFIG:
             self.config.target_language = "zh"
         self.log_hook = log_hook
         self.logs: list[str] = []
+        self.detected_source_language: Optional[str] = None
+        self.effective_source_language: Optional[str] = None
+        self.effective_subtitle_mode = (
+            "bilingual" if self.config.subtitle_mode == "bilingual" else "single"
+        )
 
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
@@ -122,8 +142,8 @@ class SubtitlePipeline:
         self.whisper_model = whisper.load_model(config.model_size)
         self.config.style = self._sanitize_style(config.style)
         self.input_path = Path(config.input_video).resolve()
-        self.output_video = self._build_output_video_path()
-        self.output_srt = self._build_output_srt_path()
+        self.output_video: Optional[str] = None
+        self.output_srt: Optional[str] = None
 
     def _log(self, message: str):
         self.logs.append(message)
@@ -133,7 +153,7 @@ class SubtitlePipeline:
     def _build_output_video_path(self) -> str:
         output_dir = self._resolve_output_dir()
         suffix = f"_{self.config.target_language}"
-        if self.config.subtitle_mode == "bilingual":
+        if self._is_effective_bilingual():
             suffix += "_bilingual"
 
         if self.config.render_mode == "burned":
@@ -145,7 +165,7 @@ class SubtitlePipeline:
     def _build_output_srt_path(self) -> str:
         output_dir = self._resolve_output_dir()
         suffix = f"_{self.config.target_language}"
-        if self.config.subtitle_mode == "bilingual":
+        if self._is_effective_bilingual():
             suffix += "_bilingual"
         output_name = f"{self.input_path.stem}{suffix}.srt"
         return str(output_dir / output_name)
@@ -195,6 +215,52 @@ class SubtitlePipeline:
 
     def _get_language_config(self, language_code: str) -> dict:
         return LANGUAGE_CONFIG.get(language_code, LANGUAGE_CONFIG["zh"])
+
+    def _normalize_language_code(self, raw_language: Optional[str]) -> Optional[str]:
+        if not raw_language:
+            return None
+        normalized = raw_language.strip().lower()
+        if not normalized:
+            return None
+        if normalized in LANGUAGE_CONFIG:
+            return normalized
+        return WHISPER_LANGUAGE_MAP.get(normalized)
+
+    def _resolve_effective_source_language(self) -> Optional[str]:
+        if self.config.source_language != "auto":
+            source_language = self._normalize_language_code(self.config.source_language)
+            if source_language:
+                label = self._get_language_config(source_language)["label"]
+                self._log(f" -> Using user-selected source language: {label} ({source_language})")
+            return source_language
+
+        if self.detected_source_language:
+            label = self._get_language_config(self.detected_source_language)["label"]
+            self._log(f" -> Using detected source language: {label} ({self.detected_source_language})")
+            return self.detected_source_language
+
+        self._log(" -> Source language could not be determined reliably.")
+        return None
+
+    def _resolve_effective_subtitle_mode(self) -> str:
+        if self.config.subtitle_mode != "bilingual":
+            return "single"
+        if self.effective_source_language and self.effective_source_language == self.config.target_language:
+            self._log(
+                f" -> Source language matches target language ({self.config.target_language}). "
+                "Bilingual output downgraded to single-language subtitles."
+            )
+            return "single"
+        return "bilingual"
+
+    def _is_effective_bilingual(self) -> bool:
+        return self.effective_subtitle_mode == "bilingual"
+
+    def _should_skip_translation(self) -> bool:
+        return (
+            self.effective_source_language is not None
+            and self.effective_source_language == self.config.target_language
+        )
 
     def _build_translation_prompt(self) -> str:
         language_profile = self._get_language_config(self.config.target_language)
@@ -384,11 +450,30 @@ class SubtitlePipeline:
 
     def transcribe(self) -> list[dict]:
         self._log("[Step 1/4] Transcribing audio with Whisper...")
-        result = self.whisper_model.transcribe(
-            str(self.input_path),
-            task="transcribe",
-            word_timestamps=True,
-        )
+        transcribe_kwargs = {
+            "task": "transcribe",
+            "word_timestamps": True,
+        }
+        if self.config.source_language != "auto":
+            transcribe_kwargs["language"] = self.config.source_language
+            label = self._get_language_config(self.config.source_language)["label"]
+            self._log(f" -> Using user-selected source language for Whisper: {label} ({self.config.source_language})")
+        else:
+            self._log(" -> Whisper source language mode: auto detect")
+
+        result = self.whisper_model.transcribe(str(self.input_path), **transcribe_kwargs)
+        self.detected_source_language = self._normalize_language_code(result.get("language"))
+        if self.detected_source_language:
+            label = self._get_language_config(self.detected_source_language)["label"]
+            self._log(f" -> Detected source language: {label} ({self.detected_source_language})")
+        else:
+            self._log(" -> Source language detection unavailable")
+
+        self.effective_source_language = self._resolve_effective_source_language()
+        self.effective_subtitle_mode = self._resolve_effective_subtitle_mode()
+        self.output_video = self._build_output_video_path()
+        self.output_srt = self._build_output_srt_path()
+
         segments = result["segments"]
         self._log(f" -> Transcription complete: {len(segments)} segments")
         return segments
@@ -476,6 +561,23 @@ class SubtitlePipeline:
     def translate(self, segments: list[dict]) -> list[dict]:
         language_label = self._get_language_config(self.config.target_language)["label"]
         self._log(f"[Step 2/4] Translating subtitles in batches to {language_label}...")
+
+        if self._should_skip_translation():
+            self._log(
+                f" -> Source language matches target language ({self.config.target_language}). "
+                "Skipping translation and using Whisper transcript directly."
+            )
+            return [
+                {
+                    "start": segment["start"],
+                    "end": segment["end"],
+                    "source_text": self._normalize_text(segment["text"]),
+                    "translated_text": self._normalize_text(segment["text"]),
+                    "words": segment.get("words", []),
+                }
+                for segment in segments
+            ]
+
         translated_segments: list[dict] = []
         total_segments = len(segments)
         total_batches = (total_segments + self.config.batch_size - 1) // self.config.batch_size
@@ -601,7 +703,7 @@ class SubtitlePipeline:
     def build_subtitle_chunks(self, translated_segments: list[dict]) -> list[dict]:
         subtitle_chunks: list[dict] = []
         for segment in translated_segments:
-            if self.config.subtitle_mode == "bilingual":
+            if self._is_effective_bilingual():
                 subtitle_chunks.extend(self._split_bilingual_segment(segment))
             else:
                 subtitle_chunks.extend(self._split_translated_segment(segment))
@@ -611,7 +713,7 @@ class SubtitlePipeline:
         self._log("[Step 3/4] Writing subtitle file...")
         with open(self.output_srt, "w", encoding="utf-8") as subtitle_file:
             for index, chunk in enumerate(subtitle_chunks, start=1):
-                if self.config.subtitle_mode == "bilingual":
+                if self._is_effective_bilingual():
                     text = f'{chunk["source_text"]}\n{chunk["translated_text"]}'
                 else:
                     text = chunk["text"]
@@ -689,7 +791,7 @@ class SubtitlePipeline:
             self._log(f"Failed: {exc}")
             return SubtitleJobResult(
                 output_video=None,
-                output_srt=self.output_srt if os.path.exists(self.output_srt) else None,
+                output_srt=self.output_srt if self.output_srt and os.path.exists(self.output_srt) else None,
                 logs=self.logs,
                 success=False,
                 error=str(exc),

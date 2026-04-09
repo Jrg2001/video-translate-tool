@@ -13,6 +13,13 @@ st.caption("Local video translation with single or bilingual subtitle output.")
 
 with st.sidebar:
     st.header("Job Settings")
+    source_language_options = ["auto", *LANGUAGE_CONFIG.keys()]
+    source_language = st.selectbox(
+        "Source Language",
+        source_language_options,
+        index=0,
+        format_func=lambda code: "Auto Detect" if code == "auto" else LANGUAGE_CONFIG[code]["label"],
+    )
     target_language = st.selectbox(
         "Target Language",
         list(LANGUAGE_CONFIG.keys()),
@@ -42,6 +49,9 @@ with st.sidebar:
     bottom_margin = st.slider("Bottom Margin", min_value=10, max_value=120, value=30)
     st.caption("Style settings apply to burned subtitles. Soft subtitle appearance depends on the video player.")
     st.caption("Bilingual subtitles use the source text on top and the selected target language on the bottom.")
+    st.caption("Auto Detect uses Whisper language detection. You can manually select the source language if detection is inaccurate.")
+    st.caption("If source and target languages match, bilingual output is automatically downgraded to single-language subtitles.")
+    st.caption("If source and target languages match, translation is skipped and the Whisper transcript is used directly.")
 
 uploaded_file = st.file_uploader("Upload Video", type=["mp4", "mkv", "mov", "avi", "webm"])
 
@@ -72,6 +82,7 @@ if st.button("Start", type="primary", disabled=uploaded_file is None):
 
         config = SubtitleJobConfig(
             input_video=str(input_path),
+            source_language=source_language,
             target_language=target_language,
             subtitle_mode=subtitle_mode,
             render_mode=render_mode,
