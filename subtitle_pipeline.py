@@ -312,34 +312,132 @@ class SubtitlePipeline:
         tokenizer = language_profile["tokenizer"]
 
         if tokenizer == "whitespace":
-            return self._group_whitespace_tokens(tokens)
+            return self._split_english_tokens(tokens)
         if tokenizer == "char":
             return self._group_character_tokens(tokens, target_chars=18, max_chars=24)
         return self._group_character_tokens(tokens, target_chars=14, max_chars=18)
 
-    def _group_whitespace_tokens(self, tokens: list[str], target_words: int = 7, max_chars: int = 42) -> list[str]:
+    def _is_weak_english_start(self, token: str) -> bool:
+        normalized = token.strip(".,!?;:").lower()
+        return normalized in {
+            "a", "an", "the",
+            "to", "of", "in", "on", "at", "for", "by", "with", "from", "into", "onto",
+            "and", "or", "but", "nor", "so", "yet",
+        }
+
+    def _score_english_break(self, left_tokens: list[str], right_tokens: list[str]) -> float:
+        if not left_tokens or not right_tokens:
+            return float("-inf")
+
+        left_text = " ".join(left_tokens)
+        right_text = " ".join(right_tokens)
+        left_word_count = len(left_tokens)
+        right_word_count = len(right_tokens)
+        score = 0.0
+
+        if left_tokens[-1].endswith((".", "?", "!")):
+            score += 4.0
+        elif left_tokens[-1].endswith((",", ";", ":")):
+            score += 3.0
+
+        if 6 <= left_word_count <= 8:
+            score += 2.0
+        elif 4 <= left_word_count <= 10:
+            score += 1.0
+
+        left_len = len(left_text)
+        right_len = len(right_text)
+        if 28 <= left_len <= 38:
+            score += 1.5
+        elif left_len <= 48:
+            score += 0.5
+
+        score -= abs(left_len - right_len) / 12
+
+        if right_word_count < 3:
+            score -= 4.0
+        elif right_word_count < 4:
+            score -= 1.5
+
+        if self._is_weak_english_start(right_tokens[0]):
+            score -= 4.5
+
+        if left_word_count < 3:
+            score -= 3.0
+
+        return score
+
+    def _split_english_tokens(
+        self,
+        tokens: list[str],
+        target_words: int = 7,
+        max_words: int = 10,
+        target_chars: int = 34,
+        max_chars: int = 46,
+    ) -> list[str]:
+        if not tokens:
+            return []
+
         chunks: list[str] = []
-        current_tokens: list[str] = []
-        punctuation_suffixes = (".", ",", "!", "?", ";", ":")
+        start = 0
 
-        for token in tokens:
-            candidate_tokens = current_tokens + [token]
-            candidate_text = " ".join(candidate_tokens)
+        while start < len(tokens):
+            remaining_tokens = tokens[start:]
+            if len(remaining_tokens) <= max_words and len(" ".join(remaining_tokens)) <= max_chars:
+                chunks.append(" ".join(remaining_tokens))
+                break
 
-            if current_tokens and len(candidate_text) > max_chars:
-                chunks.append(" ".join(current_tokens))
-                current_tokens = [token]
-                continue
+            min_break = min(start + 3, len(tokens) - 1)
+            max_break = min(start + max_words, len(tokens) - 1)
+            best_break = None
+            best_score = float("-inf")
 
-            current_tokens = candidate_tokens
-            if len(current_tokens) >= target_words and token.endswith(punctuation_suffixes):
-                chunks.append(" ".join(current_tokens))
-                current_tokens = []
+            for break_index in range(min_break, max_break + 1):
+                left_tokens = tokens[start:break_index]
+                right_tokens = tokens[break_index:]
+                if not left_tokens or not right_tokens:
+                    continue
 
-        if current_tokens:
-            chunks.append(" ".join(current_tokens))
+                left_text = " ".join(left_tokens)
+                if len(left_text) > max_chars:
+                    break
 
-        return self._merge_short_chunks(chunks, min_length=8, separator=" ")
+                score = self._score_english_break(left_tokens, right_tokens)
+                score -= abs(len(left_tokens) - target_words) * 0.35
+                score -= abs(len(left_text) - target_chars) * 0.04
+
+                if score > best_score:
+                    best_score = score
+                    best_break = break_index
+
+            if best_break is None:
+                best_break = min(start + target_words, len(tokens) - 1)
+
+            chunks.append(" ".join(tokens[start:best_break]))
+            start = best_break
+
+        chunks = self._merge_short_english_chunks(chunks)
+        return chunks
+
+    def _merge_short_english_chunks(self, chunks: list[str]) -> list[str]:
+        if not chunks:
+            return []
+
+        merged_chunks: list[str] = []
+        for chunk in chunks:
+            word_count = len(chunk.split())
+            if merged_chunks and word_count < 3:
+                merged_chunks[-1] = f"{merged_chunks[-1]} {chunk}".strip()
+            else:
+                merged_chunks.append(chunk)
+
+        if len(merged_chunks) >= 2:
+            last_words = merged_chunks[-1].split()
+            if len(last_words) < 3 or (last_words and self._is_weak_english_start(last_words[0])):
+                merged_chunks[-2] = f"{merged_chunks[-2]} {merged_chunks[-1]}".strip()
+                merged_chunks.pop()
+
+        return merged_chunks
 
     def _group_character_tokens(self, tokens: list[str], target_chars: int, max_chars: int) -> list[str]:
         chunks: list[str] = []
@@ -642,6 +740,12 @@ class SubtitlePipeline:
         tokens = self._tokenize_target_text(translated_text)
         chunk_texts = self._group_translation_tokens(tokens)
 
+        if self.config.verbose and self.config.target_language == "en" and chunk_texts:
+            self._log("[EN chunking]")
+            self._log(f"Original: {translated_text}")
+            for index, chunk_text in enumerate(chunk_texts, start=1):
+                self._log(f"{index}. {chunk_text}")
+
         if not chunk_texts:
             return [
                 {
@@ -662,6 +766,12 @@ class SubtitlePipeline:
         translated_text = self._normalize_text(segment["translated_text"])
         translated_tokens = self._tokenize_target_text(translated_text)
         translated_chunk_texts = self._group_translation_tokens(translated_tokens)
+
+        if self.config.verbose and self.config.target_language == "en" and translated_chunk_texts:
+            self._log("[EN chunking]")
+            self._log(f"Original: {translated_text}")
+            for index, chunk_text in enumerate(translated_chunk_texts, start=1):
+                self._log(f"{index}. {chunk_text}")
 
         if not translated_chunk_texts:
             return [
