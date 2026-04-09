@@ -3,7 +3,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from subtitle_pipeline import LANGUAGE_CONFIG, SubtitleJobConfig, SubtitleStyle, hex_to_ass_colour, run_subtitle_job
+from subtitle_pipeline import FONT_PRESETS, LANGUAGE_CONFIG, SubtitleJobConfig, SubtitleStyle, hex_to_ass_colour, run_subtitle_job
 
 
 st.set_page_config(page_title="Video Translate Tool", layout="wide")
@@ -41,7 +41,21 @@ with st.sidebar:
     output_dir = st.text_input("Output Directory", value=r"D:\transfer\outputs")
 
     st.header("Subtitle Style")
-    font_name = st.text_input("Font Name", value="Microsoft YaHei")
+    font_preset_options = [label for label, _ in FONT_PRESETS]
+    font_preset = st.selectbox("Font Preset", font_preset_options, index=0)
+    custom_font_name = ""
+    if font_preset == "Custom":
+        custom_font_name = st.text_input("Custom Font Name", value="")
+
+    selected_font_name = next(
+        (font_name for label, font_name in FONT_PRESETS if label == font_preset),
+        "Microsoft YaHei",
+    )
+    resolved_font_name = (
+        custom_font_name.strip() or "Microsoft YaHei"
+        if font_preset == "Custom"
+        else selected_font_name or "Microsoft YaHei"
+    )
     font_size = st.slider("Font Size", min_value=12, max_value=40, value=20)
     text_color = st.color_picker("Text Color", value="#FFFFFF")
     outline_color = st.color_picker("Outline Color", value="#000000")
@@ -52,6 +66,7 @@ with st.sidebar:
     st.caption("Auto Detect uses Whisper language detection. You can manually select the source language if detection is inaccurate.")
     st.caption("If source and target languages match, bilingual output is automatically downgraded to single-language subtitles.")
     st.caption("If source and target languages match, translation is skipped and the Whisper transcript is used directly.")
+    st.caption("Available presets depend on fonts installed on your system. If a font is not installed, FFmpeg may fall back to another font.")
 
 uploaded_file = st.file_uploader("Upload Video", type=["mp4", "mkv", "mov", "avi", "webm"])
 
@@ -90,7 +105,7 @@ if st.button("Start", type="primary", disabled=uploaded_file is None):
             batch_size=batch_size,
             verbose=verbose,
             style=SubtitleStyle(
-                font_name=font_name.strip() or "Microsoft YaHei",
+                font_name=resolved_font_name,
                 font_size=font_size,
                 margin_v=bottom_margin,
                 outline=outline_width,

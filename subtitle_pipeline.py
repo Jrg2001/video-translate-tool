@@ -39,6 +39,18 @@ LANGUAGE_CONFIG = {
     },
 }
 
+FONT_PRESETS = [
+    ("Microsoft YaHei", "Microsoft YaHei"),
+    ("Microsoft JhengHei", "Microsoft JhengHei"),
+    ("SimHei", "SimHei"),
+    ("Noto Sans CJK SC", "Noto Sans CJK SC"),
+    ("Noto Sans CJK JP", "Noto Sans CJK JP"),
+    ("Noto Sans CJK KR", "Noto Sans CJK KR"),
+    ("Arial", "Arial"),
+    ("Segoe UI", "Segoe UI"),
+    ("Custom", None),
+]
+
 WHISPER_LANGUAGE_MAP = {
     "zh": "zh",
     "chinese": "zh",

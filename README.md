@@ -57,7 +57,8 @@ Soft subtitle outputs write subtitle language metadata based on the selected tar
 
 The Streamlit sidebar supports these subtitle style settings:
 
-- Font name
+- Font preset
+- Custom font name
 - Font size
 - Text color
 - Outline color
@@ -69,6 +70,8 @@ These settings are applied to burned subtitles. Soft subtitle appearance depends
 Bilingual subtitles currently use the same style for both the source line and the translated line.
 
 If the selected font is not installed on the system, FFmpeg may fall back to a different font.
+
+The UI provides common font presets for multilingual subtitle use, while still allowing a custom font name when needed.
 
 ## Features
 
