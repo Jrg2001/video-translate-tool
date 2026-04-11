@@ -44,6 +44,16 @@ The Streamlit sidebar also supports two output directory modes:
 
 `Browse Folder` opens the local system folder picker. If the current environment does not support desktop dialogs, use `Manual Path`.
 
+The Streamlit UI also supports Whisper model selection:
+
+- `tiny`
+- `base`
+- `small`
+- `medium`
+- `large`
+
+The default is `small`. Smaller models are faster, while larger models are usually more accurate.
+
 After a successful run, the Streamlit UI shows structured output details and provides download buttons for the generated video and subtitle files.
 
 When using `Local File Path`, the path must point to an existing local video file on the current machine.
@@ -57,7 +67,9 @@ When using `Local File Path`, the path must point to an existing local video fil
 
 The UI also supports `Source Language`, with `Auto Detect` as the default option.
 
-Auto Detect uses Whisper language detection, while a manual source language selection overrides the detected result.
+Auto Detect uses Whisper language detection.
+
+A manual source language selection is treated as a hint for Whisper. If the manual value conflicts with Whisper's detected language, the detected result is used for downstream logic.
 
 In bilingual mode, the first line stays as the source subtitle and the second line is translated into the selected target language.
 

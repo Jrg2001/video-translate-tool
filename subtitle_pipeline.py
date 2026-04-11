@@ -137,6 +137,7 @@ class SubtitlePipeline:
             self.config.target_language = "zh"
         self.log_hook = log_hook
         self.logs: list[str] = []
+        self.requested_source_language = self._normalize_language_code(self.config.source_language)
         self.detected_source_language: Optional[str] = None
         self.effective_source_language: Optional[str] = None
         self.effective_subtitle_mode = (
@@ -239,12 +240,34 @@ class SubtitlePipeline:
         return WHISPER_LANGUAGE_MAP.get(normalized)
 
     def _resolve_effective_source_language(self) -> Optional[str]:
-        if self.config.source_language != "auto":
-            source_language = self._normalize_language_code(self.config.source_language)
-            if source_language:
-                label = self._get_language_config(source_language)["label"]
-                self._log(f" -> Using user-selected source language: {label} ({source_language})")
-            return source_language
+        if self.requested_source_language and self.config.source_language != "auto":
+            requested_label = self._get_language_config(self.requested_source_language)["label"]
+            self._log(
+                f" -> User-selected source language hint: {requested_label} ({self.requested_source_language})"
+            )
+            if self.detected_source_language:
+                if self.detected_source_language != self.requested_source_language:
+                    detected_label = self._get_language_config(self.detected_source_language)["label"]
+                    self._log(
+                        f" -> Source language mismatch: user selected {requested_label} "
+                        f"({self.requested_source_language}), but Whisper detected {detected_label} "
+                        f"({self.detected_source_language})."
+                    )
+                    self._log(
+                        f" -> Using detected source language: {detected_label} ({self.detected_source_language})"
+                    )
+                    return self.detected_source_language
+
+                self._log(
+                    f" -> Using source language: {requested_label} ({self.requested_source_language})"
+                )
+                return self.requested_source_language
+
+            self._log(
+                f" -> Whisper did not return a reliable source language. "
+                f"Using user-selected source language: {requested_label} ({self.requested_source_language})"
+            )
+            return self.requested_source_language
 
         if self.detected_source_language:
             label = self._get_language_config(self.detected_source_language)["label"]

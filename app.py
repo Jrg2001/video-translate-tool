@@ -96,6 +96,12 @@ with st.sidebar:
         index=0,
         format_func=lambda code: LANGUAGE_CONFIG[code]["label"],
     )
+    model_size = st.selectbox(
+        "Whisper Model",
+        ["tiny", "base", "small", "medium", "large"],
+        index=2,
+    )
+    st.caption("Smaller models are faster. Larger models are usually more accurate.")
     subtitle_mode = st.selectbox(
         "Subtitle Mode",
         [("single", "Single Language"), ("bilingual", "Bilingual (top/bottom)")],
@@ -132,7 +138,8 @@ with st.sidebar:
     bottom_margin = st.slider("Bottom Margin", min_value=10, max_value=120, value=30)
     st.caption("Style settings apply to burned subtitles. Soft subtitle appearance depends on the video player.")
     st.caption("Bilingual subtitles use the source text on top and the selected target language on the bottom.")
-    st.caption("Auto Detect uses Whisper language detection. You can manually select the source language if detection is inaccurate.")
+    st.caption("Auto Detect uses Whisper language detection.")
+    st.caption("Manual source language is used as a hint and may be overridden if Whisper detects a different language.")
     st.caption("If source and target languages match, bilingual output is automatically downgraded to single-language subtitles.")
     st.caption("If source and target languages match, translation is skipped and the Whisper transcript is used directly.")
     st.caption("Available presets depend on fonts installed on your system. If a font is not installed, FFmpeg may fall back to another font.")
@@ -288,6 +295,7 @@ if st.button("Start", type="primary"):
             input_video=input_video_path,
             source_language=source_language,
             target_language=target_language,
+            model_size=model_size,
             subtitle_mode=subtitle_mode,
             render_mode=render_mode,
             output_dir=output_dir,
