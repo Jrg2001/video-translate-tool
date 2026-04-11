@@ -1,9 +1,13 @@
 import tempfile
 from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog
 
 import streamlit as st
 
 from subtitle_pipeline import FONT_PRESETS, LANGUAGE_CONFIG, SubtitleJobConfig, SubtitleStyle, hex_to_ass_colour, run_subtitle_job
+
+SUPPORTED_VIDEO_EXTENSIONS = (".mp4", ".mkv", ".mov", ".avi", ".webm")
 
 
 st.set_page_config(page_title="Video Translate Tool", layout="wide")
@@ -11,8 +15,74 @@ st.set_page_config(page_title="Video Translate Tool", layout="wide")
 st.title("Video Translate Tool")
 st.caption("Local video translation with single or bilingual subtitle output.")
 
+if "job_logs" not in st.session_state:
+    st.session_state.job_logs = []
+if "job_result" not in st.session_state:
+    st.session_state.job_result = None
+if "selected_output_dir" not in st.session_state:
+    st.session_state.selected_output_dir = r"D:\transfer\outputs"
+
+
+def pick_output_directory(initial_dir: str | None) -> tuple[str | None, str | None]:
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected_dir = filedialog.askdirectory(initialdir=initial_dir or None)
+        root.destroy()
+    except Exception:
+        return None, "Folder picker is unavailable in the current environment. Use Manual Path instead."
+
+    return selected_dir or None, None
+
 with st.sidebar:
     st.header("Job Settings")
+    input_source = st.selectbox(
+        "Input Source",
+        [("local_path", "Local File Path"), ("upload", "Upload File")],
+        index=0,
+        format_func=lambda item: item[1],
+    )[0]
+    uploaded_file = None
+    local_video_path = ""
+    if input_source == "upload":
+        uploaded_file = st.file_uploader(
+            "Upload Video",
+            type=[ext.lstrip(".") for ext in SUPPORTED_VIDEO_EXTENSIONS],
+        )
+    else:
+        local_video_path = st.text_input("Local Video Path", value="")
+
+    output_dir_source = st.selectbox(
+        "Output Directory Source",
+        [("manual", "Manual Path"), ("browse", "Browse Folder")],
+        index=0,
+        format_func=lambda item: item[1],
+    )[0]
+    manual_output_dir = ""
+    if output_dir_source == "manual":
+        manual_output_dir = st.text_input(
+            "Output Directory",
+            value=st.session_state.selected_output_dir,
+        )
+    else:
+        st.text_input(
+            "Selected Output Directory",
+            value=st.session_state.selected_output_dir,
+            disabled=True,
+        )
+        if st.button("Browse Folder"):
+            selected_dir, picker_error = pick_output_directory(st.session_state.selected_output_dir)
+            if picker_error:
+                st.warning(picker_error)
+            elif selected_dir:
+                st.session_state.selected_output_dir = selected_dir
+                st.rerun()
+        st.caption("Browse Folder opens the local system folder picker.")
+        st.caption("If folder browsing is unavailable in the current environment, use Manual Path instead.")
+    st.caption("Upload File supports videos up to 2GB.")
+    st.caption("For larger files or local use, choose Local File Path.")
+
     source_language_options = ["auto", *LANGUAGE_CONFIG.keys()]
     source_language = st.selectbox(
         "Source Language",
@@ -38,7 +108,6 @@ with st.sidebar:
     )[0]
     batch_size = st.slider("Batch Size", min_value=1, max_value=20, value=10)
     verbose = st.checkbox("Verbose Logs", value=False)
-    output_dir = st.text_input("Output Directory", value=r"D:\transfer\outputs")
 
     st.header("Subtitle Style")
     font_preset_options = [label for label, _ in FONT_PRESETS]
@@ -68,15 +137,8 @@ with st.sidebar:
     st.caption("If source and target languages match, translation is skipped and the Whisper transcript is used directly.")
     st.caption("Available presets depend on fonts installed on your system. If a font is not installed, FFmpeg may fall back to another font.")
 
-uploaded_file = st.file_uploader("Upload Video", type=["mp4", "mkv", "mov", "avi", "webm"])
-
 logs_placeholder = st.empty()
 result_placeholder = st.empty()
-
-if "job_logs" not in st.session_state:
-    st.session_state.job_logs = []
-if "job_result" not in st.session_state:
-    st.session_state.job_result = None
 
 
 def append_log(message: str):
@@ -117,6 +179,66 @@ def render_result_file(label: str, path_value: str | None, mime: str):
         )
 
 
+def resolve_input_video_path(
+    selected_input_source: str,
+    uploaded_video,
+    local_path_value: str,
+) -> tuple[str | None, str | None]:
+    if selected_input_source == "upload":
+        if uploaded_video is None:
+            return None, "Upload a video first."
+
+        suffix = Path(uploaded_video.name).suffix.lower()
+        if suffix not in SUPPORTED_VIDEO_EXTENSIONS:
+            return None, f"Unsupported video format: {suffix or 'unknown'}"
+
+        uploads_dir = Path(tempfile.gettempdir()) / "video_translate_tool_uploads"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        input_path = uploads_dir / uploaded_video.name
+        input_path.write_bytes(uploaded_video.getbuffer())
+        return str(input_path), None
+
+    raw_path = local_path_value.strip()
+    if not raw_path:
+        return None, "Enter a local video path first."
+
+    try:
+        resolved_path = Path(raw_path).expanduser().resolve()
+    except OSError as exc:
+        return None, f"Invalid local video path: {exc}"
+
+    if not resolved_path.exists():
+        return None, f"Local video file not found: {resolved_path}"
+    if not resolved_path.is_file():
+        return None, f"Local video path is not a file: {resolved_path}"
+    if resolved_path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
+        return None, f"Unsupported video format: {resolved_path.suffix or 'unknown'}"
+
+    return str(resolved_path), None
+
+
+def resolve_output_directory(
+    selected_output_dir_source: str,
+    manual_output_dir: str,
+    selected_output_dir: str,
+) -> tuple[str | None, str | None]:
+    if selected_output_dir_source == "manual":
+        raw_path = manual_output_dir.strip()
+        if not raw_path:
+            return None, "Enter an output directory first."
+    else:
+        raw_path = selected_output_dir.strip()
+        if not raw_path:
+            return None, "Choose an output folder first."
+
+    try:
+        resolved_path = Path(raw_path).expanduser().resolve()
+    except OSError as exc:
+        return None, f"Invalid output directory: {exc}"
+
+    return str(resolved_path), None
+
+
 def render_job_result():
     result = st.session_state.job_result
     if not result:
@@ -138,27 +260,37 @@ if st.session_state.job_logs:
     logs_placeholder.code("\n".join(st.session_state.job_logs), language="text")
 
 
-if st.button("Start", type="primary", disabled=uploaded_file is None):
+if st.button("Start", type="primary"):
     st.session_state.job_logs = []
     st.session_state.job_result = None
     logs_placeholder.empty()
     result_placeholder.empty()
 
-    if uploaded_file is None:
-        st.warning("Upload a video first.")
-    else:
-        uploads_dir = Path(tempfile.gettempdir()) / "video_translate_tool_uploads"
-        uploads_dir.mkdir(parents=True, exist_ok=True)
-        input_path = uploads_dir / uploaded_file.name
-        input_path.write_bytes(uploaded_file.getbuffer())
+    input_video_path, input_error = resolve_input_video_path(
+        input_source,
+        uploaded_file,
+        local_video_path,
+    )
+    output_dir, output_error = resolve_output_directory(
+        output_dir_source,
+        manual_output_dir,
+        st.session_state.selected_output_dir,
+    )
 
+    if input_error:
+        result_placeholder.error(input_error)
+    elif output_error:
+        result_placeholder.error(output_error)
+    else:
+        if output_dir_source == "manual":
+            st.session_state.selected_output_dir = output_dir
         config = SubtitleJobConfig(
-            input_video=str(input_path),
+            input_video=input_video_path,
             source_language=source_language,
             target_language=target_language,
             subtitle_mode=subtitle_mode,
             render_mode=render_mode,
-            output_dir=output_dir.strip() or None,
+            output_dir=output_dir,
             batch_size=batch_size,
             verbose=verbose,
             style=SubtitleStyle(

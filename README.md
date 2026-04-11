@@ -30,7 +30,23 @@ The default script example writes outputs to `D:\transfer\outputs`.
 streamlit run app.py
 ```
 
-In the Streamlit sidebar, set `Output Directory` to a folder such as `D:\transfer\outputs` or `D:\`.
+The Streamlit app supports two input modes:
+
+- `Local File Path`
+- `Upload File`
+
+`Upload File` supports videos up to 2GB. For larger videos or normal local use, prefer `Local File Path`.
+
+The Streamlit sidebar also supports two output directory modes:
+
+- `Manual Path`
+- `Browse Folder`
+
+`Browse Folder` opens the local system folder picker. If the current environment does not support desktop dialogs, use `Manual Path`.
+
+After a successful run, the Streamlit UI shows structured output details and provides download buttons for the generated video and subtitle files.
+
+When using `Local File Path`, the path must point to an existing local video file on the current machine.
 
 ## Supported Target Languages
 
