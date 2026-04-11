@@ -126,17 +126,8 @@ def render_job_result():
         result_placeholder.success("Completed")
         output_video_path = Path(result["output_video"]).resolve() if result["output_video"] else None
         output_subtitle_path = Path(result["output_srt"]).resolve() if result["output_srt"] else None
-        output_directory = None
-        if output_video_path:
-            output_directory = output_video_path.parent
-        elif output_subtitle_path:
-            output_directory = output_subtitle_path.parent
 
         st.subheader("Outputs")
-        if output_directory:
-            st.write("Output Directory:")
-            st.code(str(output_directory))
-
         render_result_file("Video", str(output_video_path) if output_video_path else None, "video/mp4")
         render_result_file("Subtitle", str(output_subtitle_path) if output_subtitle_path else None, "application/x-subrip")
     else:
