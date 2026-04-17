@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -127,7 +128,12 @@ class SubtitleJobResult:
 
 
 class SubtitlePipeline:
-    def __init__(self, config: SubtitleJobConfig, log_hook: Optional[Callable[[str], None]] = None):
+    def __init__(
+        self,
+        config: SubtitleJobConfig,
+        log_hook: Optional[Callable[[str], None]] = None,
+        progress_hook: Optional[Callable[[dict], None]] = None,
+    ):
         load_env_file()
 
         self.config = config
@@ -136,6 +142,7 @@ class SubtitlePipeline:
         if self.config.target_language not in LANGUAGE_CONFIG:
             self.config.target_language = "zh"
         self.log_hook = log_hook
+        self.progress_hook = progress_hook
         self.logs: list[str] = []
         self.requested_source_language = self._normalize_language_code(self.config.source_language)
         self.detected_source_language: Optional[str] = None
@@ -143,6 +150,8 @@ class SubtitlePipeline:
         self.effective_subtitle_mode = (
             "bilingual" if self.config.subtitle_mode == "bilingual" else "single"
         )
+        self.media_duration: Optional[float] = None
+        self._last_reported_progress: float = -1.0
 
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
@@ -162,6 +171,21 @@ class SubtitlePipeline:
         self.logs.append(message)
         if self.log_hook:
             self.log_hook(message)
+
+    def _report_progress(self, stage: str, percent: float, detail: str = ""):
+        clamped_percent = max(0.0, min(100.0, float(percent)))
+        if (
+            self.progress_hook
+            and (clamped_percent >= 100.0 or self._last_reported_progress < 0 or abs(clamped_percent - self._last_reported_progress) >= 0.5)
+        ):
+            self.progress_hook(
+                {
+                    "stage": stage,
+                    "percent": clamped_percent,
+                    "detail": detail,
+                }
+            )
+            self._last_reported_progress = clamped_percent
 
     def _build_output_video_path(self) -> str:
         output_dir = self._resolve_output_dir()
@@ -198,6 +222,41 @@ class SubtitlePipeline:
         minutes, secs = divmod(remainder, 60)
         milliseconds = int((seconds - total_seconds) * 1000)
         return f"{hours:02d}:{minutes:02d}:{secs:02d},{milliseconds:03d}"
+
+    def _resolve_ffprobe_path(self) -> Optional[str]:
+        ffmpeg_path = Path(self.config.ffmpeg_exe)
+        ffprobe_name = "ffprobe.exe" if os.name == "nt" else "ffprobe"
+        if ffmpeg_path.parent != Path("."):
+            sibling_path = ffmpeg_path.parent / ffprobe_name
+            if sibling_path.exists():
+                return str(sibling_path)
+        return shutil.which("ffprobe")
+
+    def _probe_media_duration(self) -> Optional[float]:
+        ffprobe_path = self._resolve_ffprobe_path()
+        if not ffprobe_path:
+            return None
+
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe_path,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(self.input_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            duration = float(result.stdout.strip())
+            return duration if duration > 0 else None
+        except (subprocess.SubprocessError, ValueError):
+            return None
 
     def _sanitize_style(self, style: SubtitleStyle) -> SubtitleStyle:
         font_name = style.font_name.strip() or "Microsoft YaHei"
@@ -583,6 +642,7 @@ class SubtitlePipeline:
 
     def transcribe(self) -> list[dict]:
         self._log("[Step 1/4] Transcribing audio with Whisper...")
+        self._report_progress("transcribe", 5, "Loading Whisper and transcribing audio")
         transcribe_kwargs = {
             "task": "transcribe",
             "word_timestamps": True,
@@ -608,6 +668,9 @@ class SubtitlePipeline:
         self.output_srt = self._build_output_srt_path()
 
         segments = result["segments"]
+        if segments:
+            self.media_duration = max((segment.get("end", 0.0) for segment in segments), default=0.0) or None
+        self._report_progress("transcribe", 25, f"{len(segments)} segments")
         self._log(f" -> Transcription complete: {len(segments)} segments")
         return segments
 
@@ -694,12 +757,14 @@ class SubtitlePipeline:
     def translate(self, segments: list[dict]) -> list[dict]:
         language_label = self._get_language_config(self.config.target_language)["label"]
         self._log(f"[Step 2/4] Translating subtitles in batches to {language_label}...")
+        self._report_progress("translate", 25, f"Target language: {language_label}")
 
         if self._should_skip_translation():
             self._log(
                 f" -> Source language matches target language ({self.config.target_language}). "
                 "Skipping translation and using Whisper transcript directly."
             )
+            self._report_progress("translate", 55, "Translation skipped")
             return [
                 {
                     "start": segment["start"],
@@ -751,11 +816,14 @@ class SubtitlePipeline:
             self._log(
                 f" -> Batch {batch_index}/{total_batches} complete, processed {len(translated_segments)}/{total_segments} segments"
             )
+            translate_percent = 25 + (30 * batch_index / total_batches)
+            self._report_progress("translate", translate_percent, f"Batch {batch_index}/{total_batches}")
 
             if self.config.verbose:
                 for segment, translated_text in zip(batch_segments, translations):
                     self._log(f'    {segment["text"]} >>> {translated_text}')
 
+        self._report_progress("translate", 55, "Translation complete")
         return translated_segments
 
     def _split_translated_segment(self, segment: dict) -> list[dict]:
@@ -856,6 +924,7 @@ class SubtitlePipeline:
 
     def write_srt(self, subtitle_chunks: list[dict]) -> str:
         self._log("[Step 3/4] Writing subtitle file...")
+        self._report_progress("write_srt", 55, "Writing subtitle file")
         with open(self.output_srt, "w", encoding="utf-8") as subtitle_file:
             for index, chunk in enumerate(subtitle_chunks, start=1):
                 if self._is_effective_bilingual():
@@ -868,6 +937,7 @@ class SubtitlePipeline:
                 subtitle_file.write(f"{text}\n\n")
 
         self._log(f" -> Subtitle file written: {self.output_srt}")
+        self._report_progress("write_srt", 60, "Subtitle file ready")
         return self.output_srt
 
     def _subtitle_style_string(self) -> str:
@@ -882,11 +952,15 @@ class SubtitlePipeline:
         )
 
     def render_video(self) -> str:
+        if not self.media_duration:
+            self.media_duration = self._probe_media_duration()
         if self.config.render_mode == "soft":
             self._log("[Step 4/4] Muxing soft subtitles into video...")
             command = [
                 self.config.ffmpeg_exe,
                 "-loglevel", "warning",
+                "-progress", "pipe:2",
+                "-nostats",
                 "-y",
                 "-i", str(self.input_path),
                 "-i", self.output_srt,
@@ -904,6 +978,8 @@ class SubtitlePipeline:
             command = [
                 self.config.ffmpeg_exe,
                 "-loglevel", "warning",
+                "-progress", "pipe:2",
+                "-nostats",
                 "-y",
                 "-i", str(self.input_path),
                 "-vf", subtitle_filter,
@@ -914,12 +990,49 @@ class SubtitlePipeline:
                 self.output_video,
             ]
 
-        subprocess.run(command, check=True)
+        self._report_progress("render", 60, "Starting FFmpeg")
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            universal_newlines=True,
+        )
+        assert process.stderr is not None
+        for raw_line in process.stderr:
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            current_seconds = None
+            if line.startswith("out_time_us="):
+                try:
+                    current_seconds = int(line.split("=", 1)[1]) / 1_000_000
+                except ValueError:
+                    current_seconds = None
+            elif line.startswith("out_time="):
+                time_value = line.split("=", 1)[1]
+                try:
+                    hours, minutes, seconds = time_value.split(":")
+                    current_seconds = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+                except ValueError:
+                    current_seconds = None
+
+            if current_seconds is not None and self.media_duration:
+                render_fraction = min(max(current_seconds / self.media_duration, 0.0), 1.0)
+                overall_percent = 60 + 40 * render_fraction
+                self._report_progress("render", overall_percent, f"Rendering video ({overall_percent:.0f}%)")
+
+        return_code = process.wait()
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, command)
         self._log(f" -> Video output ready: {self.output_video}")
+        self._report_progress("done", 100, "Video output ready")
         return self.output_video
 
     def run(self) -> SubtitleJobResult:
         try:
+            self._report_progress("start", 0, "Preparing job")
             segments = self.transcribe()
             translated_segments = self.translate(segments)
             subtitle_chunks = self.build_subtitle_chunks(translated_segments)
@@ -933,6 +1046,7 @@ class SubtitlePipeline:
                 success=True,
             )
         except Exception as exc:
+            self._report_progress("failed", self._last_reported_progress if self._last_reported_progress >= 0 else 0, str(exc))
             self._log(f"Failed: {exc}")
             return SubtitleJobResult(
                 output_video=None,
@@ -946,6 +1060,7 @@ class SubtitlePipeline:
 def run_subtitle_job(
     config: SubtitleJobConfig,
     log_hook: Optional[Callable[[str], None]] = None,
+    progress_hook: Optional[Callable[[dict], None]] = None,
 ) -> SubtitleJobResult:
-    pipeline = SubtitlePipeline(config, log_hook=log_hook)
+    pipeline = SubtitlePipeline(config, log_hook=log_hook, progress_hook=progress_hook)
     return pipeline.run()

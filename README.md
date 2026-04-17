@@ -54,6 +54,8 @@ The Streamlit UI also supports Whisper model selection:
 
 The default is `small`. Smaller models are faster, while larger models are usually more accurate.
 
+The Streamlit UI displays stage progress for transcription, translation, subtitle writing, and video rendering. During FFmpeg rendering, the progress bar uses parsed FFmpeg progress output when available.
+
 After a successful run, the Streamlit UI shows structured output details and provides download buttons for the generated video and subtitle files.
 
 When using `Local File Path`, the path must point to an existing local video file on the current machine.

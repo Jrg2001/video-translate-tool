@@ -21,6 +21,12 @@ if "job_result" not in st.session_state:
     st.session_state.job_result = None
 if "selected_output_dir" not in st.session_state:
     st.session_state.selected_output_dir = r"D:\transfer\outputs"
+if "job_progress" not in st.session_state:
+    st.session_state.job_progress = 0.0
+if "job_progress_stage" not in st.session_state:
+    st.session_state.job_progress_stage = ""
+if "job_progress_detail" not in st.session_state:
+    st.session_state.job_progress_detail = ""
 
 
 def pick_output_directory(initial_dir: str | None) -> tuple[str | None, str | None]:
@@ -146,11 +152,62 @@ with st.sidebar:
 
 logs_placeholder = st.empty()
 result_placeholder = st.empty()
+progress_bar_placeholder = st.empty()
+progress_text_placeholder = st.empty()
 
 
 def append_log(message: str):
     st.session_state.job_logs.append(message)
     logs_placeholder.code("\n".join(st.session_state.job_logs), language="text")
+
+
+def append_progress(update: dict):
+    percent = max(0.0, min(100.0, float(update.get("percent", 0.0))))
+    stage = str(update.get("stage", "") or "")
+    detail = str(update.get("detail", "") or "")
+    st.session_state.job_progress = percent
+    st.session_state.job_progress_stage = stage
+    st.session_state.job_progress_detail = detail
+    progress_bar_placeholder.progress(percent / 100.0)
+
+    stage_labels = {
+        "start": "Preparing job",
+        "transcribe": "Step 1/4: Transcribing audio",
+        "translate": "Step 2/4: Translating subtitles",
+        "write_srt": "Step 3/4: Writing subtitle file",
+        "render": "Step 4/4: Rendering video",
+        "done": "Completed",
+        "failed": "Failed",
+    }
+    label = stage_labels.get(stage, "Processing")
+    if detail:
+        progress_text_placeholder.caption(f"{label} - {detail}")
+    else:
+        progress_text_placeholder.caption(label)
+
+
+def render_progress():
+    stage = st.session_state.job_progress_stage
+    detail = st.session_state.job_progress_detail
+    percent = st.session_state.job_progress
+    if percent <= 0 and not stage and not detail:
+        return
+
+    progress_bar_placeholder.progress(percent / 100.0)
+    stage_labels = {
+        "start": "Preparing job",
+        "transcribe": "Step 1/4: Transcribing audio",
+        "translate": "Step 2/4: Translating subtitles",
+        "write_srt": "Step 3/4: Writing subtitle file",
+        "render": "Step 4/4: Rendering video",
+        "done": "Completed",
+        "failed": "Failed",
+    }
+    label = stage_labels.get(stage, "Processing")
+    if detail:
+        progress_text_placeholder.caption(f"{label} - {detail}")
+    else:
+        progress_text_placeholder.caption(label)
 
 
 def human_file_size(size_bytes: int) -> str:
@@ -265,13 +322,19 @@ def render_job_result():
 
 if st.session_state.job_logs:
     logs_placeholder.code("\n".join(st.session_state.job_logs), language="text")
+render_progress()
 
 
 if st.button("Start", type="primary"):
     st.session_state.job_logs = []
     st.session_state.job_result = None
+    st.session_state.job_progress = 0.0
+    st.session_state.job_progress_stage = ""
+    st.session_state.job_progress_detail = ""
     logs_placeholder.empty()
     result_placeholder.empty()
+    progress_bar_placeholder.empty()
+    progress_text_placeholder.empty()
 
     input_video_path, input_error = resolve_input_video_path(
         input_source,
@@ -311,8 +374,7 @@ if st.button("Start", type="primary"):
             ),
         )
 
-        with st.spinner("Processing video..."):
-            result = run_subtitle_job(config, log_hook=append_log)
+        result = run_subtitle_job(config, log_hook=append_log, progress_hook=append_progress)
 
         st.session_state.job_result = {
             "success": result.success,
