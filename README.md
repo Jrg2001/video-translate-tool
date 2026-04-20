@@ -4,7 +4,7 @@ Local video processing tool for transcription, translation, subtitle generation,
 
 ## Install
 
-```powershell
+```bash
 pip install -r requirements.txt
 ```
 
@@ -15,6 +15,55 @@ Create a local `.env` file:
 ```env
 DEEPSEEK_API_KEY=your_api_key_here
 ```
+
+## Linux Deployment
+
+### System Dependencies
+
+```bash
+# FFmpeg and ffprobe
+sudo apt install -y ffmpeg
+
+# CJK fonts for burned subtitle rendering
+sudo apt install -y fonts-noto-cjk
+
+# Audio library required by openai-whisper
+sudo apt install -y libsndfile1
+```
+
+### Option A: Direct Deployment (single server / LAN)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+cp .env.example .env
+# Fill in DEEPSEEK_API_KEY
+
+streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+```
+
+To run as a persistent background service, copy `video-translate.service` to `/etc/systemd/system/`, edit the `User` and `WorkingDirectory` fields, then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable video-translate
+sudo systemctl start video-translate
+```
+
+### Option B: Docker (recommended for production)
+
+```bash
+cp .env.example .env
+# Fill in DEEPSEEK_API_KEY
+
+docker compose up -d
+```
+
+The app will be available at `http://<server-ip>:8501`.
+
+Output files are persisted to `./outputs/` on the host. Whisper model weights are cached in a named Docker volume so they survive container restarts.
 
 ## Run The Script
 

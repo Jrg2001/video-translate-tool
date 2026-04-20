@@ -1,7 +1,5 @@
 import tempfile
 from pathlib import Path
-import tkinter as tk
-from tkinter import filedialog
 
 import streamlit as st
 
@@ -20,7 +18,7 @@ if "job_logs" not in st.session_state:
 if "job_result" not in st.session_state:
     st.session_state.job_result = None
 if "selected_output_dir" not in st.session_state:
-    st.session_state.selected_output_dir = r"D:\transfer\outputs"
+    st.session_state.selected_output_dir = str(Path.home() / "video_translate_outputs")
 if "job_progress" not in st.session_state:
     st.session_state.job_progress = 0.0
 if "job_progress_stage" not in st.session_state:
@@ -31,6 +29,9 @@ if "job_progress_detail" not in st.session_state:
 
 def pick_output_directory(initial_dir: str | None) -> tuple[str | None, str | None]:
     try:
+        import tkinter as tk
+        from tkinter import filedialog
+
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)

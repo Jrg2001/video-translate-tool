@@ -1,0 +1,18 @@
+version: '3.3'
+
+services:
+  video-translate:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      # 输出文件持久化到宿主机
+      - ./outputs:/root/video_translate_outputs
+      # Whisper 模型缓存（避免每次重启重新下载）
+      - whisper-cache:/root/.cache/whisper
+    env_file:
+      - .env
+    restart: unless-stopped
+
+volumes:
+  whisper-cache:

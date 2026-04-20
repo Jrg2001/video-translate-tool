@@ -1,0 +1,28 @@
+# systemd 服务文件示例
+# 使用方法：
+#   sudo cp video-translate.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable video-translate
+#   sudo systemctl start video-translate
+#   sudo systemctl status video-translate
+
+[Unit]
+Description=Video Translate Tool (Streamlit)
+After=network.target
+
+[Service]
+Type=simple
+# 改为实际运行用户
+User=ubuntu
+WorkingDirectory=/opt/video-translate-tool
+# API Key 通过 .env 文件注入
+EnvironmentFile=/opt/video-translate-tool/.env
+ExecStart=/opt/video-translate-tool/.venv/bin/streamlit run app.py \
+    --server.port=8501 \
+    --server.address=0.0.0.0 \
+    --server.headless=true
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

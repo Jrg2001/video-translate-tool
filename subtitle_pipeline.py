@@ -41,12 +41,12 @@ LANGUAGE_CONFIG = {
 }
 
 FONT_PRESETS = [
-    ("Microsoft YaHei", "Microsoft YaHei"),
-    ("Microsoft JhengHei", "Microsoft JhengHei"),
-    ("SimHei", "SimHei"),
     ("Noto Sans CJK SC", "Noto Sans CJK SC"),
     ("Noto Sans CJK JP", "Noto Sans CJK JP"),
     ("Noto Sans CJK KR", "Noto Sans CJK KR"),
+    ("Microsoft YaHei", "Microsoft YaHei"),
+    ("Microsoft JhengHei", "Microsoft JhengHei"),
+    ("SimHei", "SimHei"),
     ("Arial", "Arial"),
     ("Segoe UI", "Segoe UI"),
     ("Custom", None),
@@ -95,7 +95,7 @@ def hex_to_ass_colour(hex_color: str, default: str) -> str:
 
 @dataclass
 class SubtitleStyle:
-    font_name: str = "Microsoft YaHei"
+    font_name: str = "Noto Sans CJK SC"
     font_size: int = 20
     margin_v: int = 30
     outline: int = 2

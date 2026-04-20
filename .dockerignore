@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+.idea
+__pycache__
+*.pyc
+*.pyo
+outputs/
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+*.srt
