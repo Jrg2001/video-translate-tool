@@ -89,7 +89,7 @@ def detect_video_orientation(local_path: str | None, uploaded_file) -> str:
 def _apply_orientation_defaults(orientation: str) -> None:
     """Push orientation-appropriate style defaults into session_state."""
     if orientation == "portrait":
-        st.session_state["ui_font_size"] = 22
+        st.session_state["ui_font_size"] = 15
         st.session_state["ui_bottom_margin"] = 80
         st.session_state["ui_orientation"] = "Portrait (9:16)"
     else:
