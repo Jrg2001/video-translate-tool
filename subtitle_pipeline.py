@@ -52,6 +52,45 @@ FONT_PRESETS = [
     ("Custom", None),
 ]
 
+# Style presets: each entry maps to the full set of SubtitleStyle parameters
+# plus a display hint used for the live preview.
+STYLE_PRESETS: dict[str, dict] = {
+    "Custom": {},
+    "Netflix": {
+        "font_name": "Arial",
+        "font_size": 22,
+        "margin_v": 40,
+        "outline": 2,
+        "primary_colour": "&H00FFFFFF",
+        "outline_colour": "&H00000000",
+    },
+    "YouTube": {
+        "font_name": "Noto Sans CJK SC",
+        "font_size": 20,
+        "margin_v": 35,
+        "outline": 1,
+        "primary_colour": "&H00FFFFFF",
+        "outline_colour": "&H00000000",
+    },
+    "Bilibili": {
+        "font_name": "Microsoft YaHei",
+        "font_size": 22,
+        "margin_v": 30,
+        "outline": 3,
+        "primary_colour": "&H00FFFFFF",
+        "outline_colour": "&H00000000",
+    },
+    "Classic Film": {
+        "font_name": "Noto Sans CJK SC",
+        "font_size": 20,
+        "margin_v": 25,
+        "outline": 2,
+        "primary_colour": "&H0000FFFF",
+        "outline_colour": "&H00000000",
+    },
+}
+
+
 WHISPER_LANGUAGE_MAP = {
     "zh": "zh",
     "chinese": "zh",

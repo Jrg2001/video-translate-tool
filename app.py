@@ -1,14 +1,114 @@
+import json
+import os
+import subprocess
 import tempfile
 from pathlib import Path
 
 import streamlit as st
 
-from subtitle_pipeline import FONT_PRESETS, LANGUAGE_CONFIG, SubtitleJobConfig, SubtitleStyle, hex_to_ass_colour, run_subtitle_job
+from subtitle_pipeline import FONT_PRESETS, LANGUAGE_CONFIG, STYLE_PRESETS, SubtitleJobConfig, SubtitleStyle, hex_to_ass_colour, run_subtitle_job
 
 SUPPORTED_VIDEO_EXTENSIONS = (".mp4", ".mkv", ".mov", ".avi", ".webm")
 
 
+def ass_to_hex(ass_color: str) -> str:
+    """Convert ASS colour token (&H00BBGGRR) to CSS hex (#RRGGBB)."""
+    import re as _re
+    if _re.fullmatch(r"&H00[0-9A-Fa-f]{6}", ass_color or ""):
+        b, g, r = ass_color[4:6], ass_color[6:8], ass_color[8:10]
+        return f"#{r}{g}{b}".upper()
+    return "#FFFFFF"
+
+
+def on_style_preset_change() -> None:
+    """Callback: push preset values into session_state so all widgets reflect the new style."""
+    preset_name = st.session_state.get("ui_style_preset", "Custom")
+    preset = STYLE_PRESETS.get(preset_name, {})
+    if not preset:
+        return
+    font_labels = [label for label, _ in FONT_PRESETS]
+    if "font_name" in preset and preset["font_name"] in font_labels:
+        st.session_state["ui_font_preset"] = preset["font_name"]
+    if "font_size" in preset:
+        st.session_state["ui_font_size"] = int(preset["font_size"])
+    if "margin_v" in preset:
+        st.session_state["ui_bottom_margin"] = int(preset["margin_v"])
+    if "outline" in preset:
+        st.session_state["ui_outline_width"] = int(preset["outline"])
+    if "primary_colour" in preset:
+        st.session_state["ui_text_color"] = ass_to_hex(preset["primary_colour"])
+    if "outline_colour" in preset:
+        st.session_state["ui_outline_color"] = ass_to_hex(preset["outline_colour"])
+
+
+def detect_video_orientation(local_path: str | None, uploaded_file) -> str:
+    """Return 'portrait' or 'landscape' using ffprobe.
+
+    For uploaded files only the first 10 MB are written to a temp file so we
+    never block on reading a full 2 GB upload just to parse video dimensions.
+    """
+    try:
+        if local_path:
+            proc = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-print_format", "json",
+                 "-show_streams", local_path],
+                capture_output=True, text=True, timeout=10,
+            )
+            data = json.loads(proc.stdout)
+        elif uploaded_file is not None:
+            _CHUNK = 10 * 1024 * 1024  # 10 MB is enough for most container headers
+            uploaded_file.seek(0)
+            chunk = uploaded_file.read(_CHUNK)
+            uploaded_file.seek(0)
+            suffix = Path(uploaded_file.name).suffix or ".tmp"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
+                tf.write(chunk)
+                tmp_path = tf.name
+            try:
+                proc = subprocess.run(
+                    ["ffprobe", "-v", "quiet", "-print_format", "json",
+                     "-show_streams", tmp_path],
+                    capture_output=True, text=True, timeout=10,
+                )
+                data = json.loads(proc.stdout)
+            finally:
+                os.unlink(tmp_path)
+        else:
+            return "landscape"
+
+        for stream in data.get("streams", []):
+            if stream.get("codec_type") == "video":
+                w = int(stream.get("width", 1) or 1)
+                h = int(stream.get("height", 1) or 1)
+                return "portrait" if h > w else "landscape"
+    except Exception:
+        pass
+    return "landscape"
+
+
+def _apply_orientation_defaults(orientation: str) -> None:
+    """Push orientation-appropriate style defaults into session_state."""
+    if orientation == "portrait":
+        st.session_state["ui_font_size"] = 22
+        st.session_state["ui_bottom_margin"] = 80
+        st.session_state["ui_orientation"] = "Portrait (9:16)"
+    else:
+        st.session_state["ui_font_size"] = 20
+        st.session_state["ui_bottom_margin"] = 30
+        st.session_state["ui_orientation"] = "Landscape (16:9)"
+
+
+def _on_orientation_change() -> None:
+    """Callback: user manually switched the orientation radio."""
+    orient_val = st.session_state.get("ui_orientation", "Landscape (16:9)")
+    _apply_orientation_defaults(
+        "portrait" if orient_val.startswith("Portrait") else "landscape"
+    )
+
+
 st.set_page_config(page_title="Video Translate Tool", layout="wide")
+
+
 
 st.title("Video Translate Tool")
 st.caption("Local video translation with single or bilingual subtitle output.")
@@ -25,6 +125,10 @@ if "job_progress_stage" not in st.session_state:
     st.session_state.job_progress_stage = ""
 if "job_progress_detail" not in st.session_state:
     st.session_state.job_progress_detail = ""
+if "detected_orientation" not in st.session_state:
+    st.session_state.detected_orientation = "landscape"
+if "_last_vid_key" not in st.session_state:
+    st.session_state["_last_vid_key"] = ""
 
 
 def pick_output_directory(initial_dir: str | None) -> tuple[str | None, str | None]:
@@ -90,6 +194,43 @@ with st.sidebar:
     st.caption("Upload File supports videos up to 2GB.")
     st.caption("For larger files or local use, choose Local File Path.")
 
+    # ── Auto-detect video orientation ─────────────────────────────────────
+    _vid_key = ""
+    if input_source == "upload" and uploaded_file is not None:
+        _vid_key = f"upload:{uploaded_file.name}:{uploaded_file.size}"
+    elif input_source == "local_path" and local_video_path.strip():
+        _vid_key = f"local:{local_video_path.strip()}"
+
+    if _vid_key and _vid_key != st.session_state.get("_last_vid_key", ""):
+        # New video — run ffprobe and apply defaults
+        st.session_state["_last_vid_key"] = _vid_key
+        _detected = detect_video_orientation(
+            local_path=local_video_path.strip() if input_source == "local_path" else None,
+            uploaded_file=uploaded_file if input_source == "upload" else None,
+        )
+        if _detected != st.session_state.get("detected_orientation"):
+            st.session_state["detected_orientation"] = _detected
+            _apply_orientation_defaults(_detected)
+    elif not _vid_key:
+        st.session_state["_last_vid_key"] = ""
+        st.session_state["detected_orientation"] = "landscape"
+
+    _det_label = (
+        "🔍 Auto-detected: Portrait (9:16)"
+        if st.session_state.get("detected_orientation") == "portrait"
+        else "🔍 Auto-detected: Landscape (16:9)"
+    ) if _vid_key else "🔍 No video selected—defaulting to Landscape"
+
+    st.radio(
+        "Video Orientation",
+        ["Landscape (16:9)", "Portrait (9:16)"],
+        key="ui_orientation",
+        on_change=_on_orientation_change,
+        help="Auto-detected from the selected video. You can override manually.",
+    )
+    st.caption(_det_label)
+    # ──────────────────────────────────────────────────────────
+
     source_language_options = ["auto", *LANGUAGE_CONFIG.keys()]
     source_language = st.selectbox(
         "Source Language",
@@ -123,26 +264,51 @@ with st.sidebar:
     verbose = st.checkbox("Verbose Logs", value=False)
 
     st.header("Subtitle Style")
+
+    st.selectbox(
+        "Style Preset",
+        list(STYLE_PRESETS.keys()),
+        key="ui_style_preset",
+        on_change=on_style_preset_change,
+    )
+
     font_preset_options = [label for label, _ in FONT_PRESETS]
-    font_preset = st.selectbox("Font Preset", font_preset_options, index=0)
+    font_preset = st.selectbox(
+        "Font Preset",
+        font_preset_options,
+        key="ui_font_preset",
+    )
     custom_font_name = ""
     if font_preset == "Custom":
         custom_font_name = st.text_input("Custom Font Name", value="")
 
     selected_font_name = next(
         (font_name for label, font_name in FONT_PRESETS if label == font_preset),
-        "Microsoft YaHei",
+        "Noto Sans CJK SC",
     )
     resolved_font_name = (
-        custom_font_name.strip() or "Microsoft YaHei"
+        custom_font_name.strip() or "Noto Sans CJK SC"
         if font_preset == "Custom"
-        else selected_font_name or "Microsoft YaHei"
+        else selected_font_name or "Noto Sans CJK SC"
     )
-    font_size = st.slider("Font Size", min_value=12, max_value=40, value=20)
-    text_color = st.color_picker("Text Color", value="#FFFFFF")
-    outline_color = st.color_picker("Outline Color", value="#000000")
-    outline_width = st.slider("Outline Width", min_value=0, max_value=6, value=2)
-    bottom_margin = st.slider("Bottom Margin", min_value=10, max_value=120, value=30)
+
+    font_size = st.slider("Font Size", min_value=12, max_value=40, value=20, key="ui_font_size")
+    text_color = st.color_picker("Text Color", value="#FFFFFF", key="ui_text_color")
+    outline_color = st.color_picker("Outline Color", value="#000000", key="ui_outline_color")
+    _is_portrait = st.session_state.get("ui_orientation", "Landscape (16:9)").startswith("Portrait")
+    _margin_max = 1600 if _is_portrait else 900
+    # Clamp the stored value so it never exceeds the current slider range
+    _stored_margin = st.session_state.get("ui_bottom_margin", 80 if _is_portrait else 30)
+    st.session_state["ui_bottom_margin"] = max(10, min(int(_stored_margin), _margin_max))
+    bottom_margin = st.slider(
+        "Bottom Margin",
+        min_value=10,
+        max_value=_margin_max,
+        help="Pixels from the bottom of the video frame. Portrait mode allows larger values.",
+        key="ui_bottom_margin",
+    )
+
+
     st.caption("Style settings apply to burned subtitles. Soft subtitle appearance depends on the video player.")
     st.caption("Bilingual subtitles use the source text on top and the selected target language on the bottom.")
     st.caption("Auto Detect uses Whisper language detection.")
@@ -155,6 +321,7 @@ logs_placeholder = st.empty()
 result_placeholder = st.empty()
 progress_bar_placeholder = st.empty()
 progress_text_placeholder = st.empty()
+
 
 
 def append_log(message: str):
@@ -369,7 +536,7 @@ if st.button("Start", type="primary"):
                 font_name=resolved_font_name,
                 font_size=font_size,
                 margin_v=bottom_margin,
-                outline=outline_width,
+                outline=2,
                 primary_colour=hex_to_ass_colour(text_color, "&H00FFFFFF"),
                 outline_colour=hex_to_ass_colour(outline_color, "&H00000000"),
             ),
@@ -385,3 +552,71 @@ if st.button("Start", type="primary"):
         }
 
 render_job_result()
+
+# ── Subtitle style preview (below Start button) ───────────────────────────
+if not st.session_state.job_result:
+    _pv_font_size   = st.session_state.get("ui_font_size",     20)
+    _pv_text_color  = st.session_state.get("ui_text_color",   "#FFFFFF")
+    _pv_outline_col = st.session_state.get("ui_outline_color","#000000")
+    _pv_outline_w   = 2
+    _pv_margin      = st.session_state.get("ui_bottom_margin", 30)
+    _pv_font_lbl    = st.session_state.get("ui_font_preset",  "Noto Sans CJK SC")
+    _pv_font = next(
+        (fn for lbl, fn in FONT_PRESETS if lbl == _pv_font_lbl and fn),
+        "Noto Sans CJK SC",
+    )
+    _pv_s = max(0, _pv_outline_w)
+    if _pv_s > 0:
+        # 8-directional shadows give a proper full stroke outline (matches ASS subtitle rendering)
+        _dirs = [
+            (-_pv_s, -_pv_s), (0, -_pv_s), (_pv_s, -_pv_s),
+            (-_pv_s,  0),                   (_pv_s,  0),
+            (-_pv_s,  _pv_s), (0,  _pv_s), (_pv_s,  _pv_s),
+        ]
+        _shadow_parts = [f"{dx}px {dy}px 0 {_pv_outline_col}" for dx, dy in _dirs]
+        _pv_shadow = ", ".join(_shadow_parts)
+    else:
+        _pv_shadow = "none"
+    _pv_is_portrait = st.session_state.get("ui_orientation", "Landscape (16:9)").startswith("Portrait")
+    _pv_aspect = "9 / 16" if _pv_is_portrait else "16 / 9"
+    _pv_max_w  = "220px"  if _pv_is_portrait else "720px"
+    # margin_v is pixels from the bottom of a 1080p (landscape) or 1920-tall
+    # (portrait) frame; convert accurately to % for preview
+    _ref_h = 1920 if _pv_is_portrait else 1080
+    _pv_pad = max(1, round((_pv_margin / _ref_h) * 100))
+    _pv_px  = _pv_font_size + 4
+    st.markdown("#### 🎥 Subtitle Style Preview")
+    st.markdown(
+        f"""
+<div style="
+  background: linear-gradient(160deg, #0d1117 60%, #1a2236);
+  border-radius: 10px;
+  aspect-ratio: {_pv_aspect};
+  max-width: {_pv_max_w};
+  position: relative;
+  overflow: hidden;
+  margin: 8px 0;
+">
+  <div style="
+    position: absolute;
+    bottom: {_pv_pad}%;
+    left: 0;
+    width: 100%;
+    text-align: center;
+    box-sizing: border-box;
+    padding: 0 5%;
+  ">
+  <span style="
+    color: {_pv_text_color};
+    font-family: '{_pv_font}', 'Noto Sans CJK SC', sans-serif;
+    font-size: {_pv_px}px;
+    text-shadow: {_pv_shadow};
+    line-height: 1.6;
+  ">Sample Subtitle Text</span>
+  </div>
+</div>""",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        f"Font: {_pv_font} · Size: {_pv_font_size} · Margin: {_pv_margin}px · Preview is approximate."
+    )
