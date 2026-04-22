@@ -300,7 +300,7 @@ class SubtitlePipeline:
     def _sanitize_style(self, style: SubtitleStyle) -> SubtitleStyle:
         font_name = style.font_name.strip() or "Microsoft YaHei"
         font_size = min(max(int(style.font_size), 12), 40)
-        margin_v = min(max(int(style.margin_v), 10), 120)
+        margin_v = min(max(int(style.margin_v), 10), 2000)
         outline = min(max(int(style.outline), 0), 6)
         primary_colour = (
             style.primary_colour
@@ -772,7 +772,7 @@ class SubtitlePipeline:
         except (json.JSONDecodeError, ValueError) as exc:
             self._log(f" -> Batch translation parse failed ({exc}), falling back to single translation")
             translations = [self._translate_single(seg["text"]) for seg in batch_segments]
-            return {"translations": translations, "missing_ids": list(range(len(batch_segments)))}
+            return {"translations": translations, "missing_ids": []}
 
         translation_map = {}
         for item in parsed_items:
@@ -787,7 +787,7 @@ class SubtitlePipeline:
         missing_ids = []
         for index, segment in enumerate(batch_segments):
             translated_text = translation_map.get(index)
-            if translated_text:
+            if translated_text is not None:
                 translations.append(translated_text)
             else:
                 missing_ids.append(index)
