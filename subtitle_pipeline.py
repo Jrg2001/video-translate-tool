@@ -767,7 +767,12 @@ class SubtitlePipeline:
             ],
             temperature=0.3,
         )
-        parsed_items = self._parse_batch_translation(response.choices[0].message.content)
+        try:
+            parsed_items = self._parse_batch_translation(response.choices[0].message.content)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._log(f" -> Batch translation parse failed ({exc}), falling back to single translation")
+            translations = [self._translate_single(seg["text"]) for seg in batch_segments]
+            return {"translations": translations, "missing_ids": list(range(len(batch_segments)))}
 
         translation_map = {}
         for item in parsed_items:
