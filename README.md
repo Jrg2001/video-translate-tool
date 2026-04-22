@@ -136,13 +136,15 @@ Soft subtitle outputs write subtitle language metadata based on the selected tar
 
 The Streamlit sidebar supports these subtitle style settings:
 
+- Style preset (Netflix, YouTube, Bilibili, Classic Film, Custom)
 - Font preset
 - Custom font name
 - Font size
 - Text color
 - Outline color
-- Outline width
 - Bottom margin
+- Video orientation (Auto-detects Landscape 16:9 / Portrait 9:16)
+- Real-time subtitle style preview panel
 
 These settings are applied to burned subtitles. Soft subtitle appearance depends on the video player.
 
