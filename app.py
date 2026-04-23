@@ -261,6 +261,13 @@ with st.sidebar:
         format_func=lambda item: item[1],
     )[0]
     batch_size = st.slider("Batch Size", min_value=1, max_value=20, value=10)
+    translation_workers = st.slider(
+        "Concurrent Translators",
+        min_value=1,
+        max_value=10,
+        value=3,
+        help="Number of concurrent translation batches sent to the API. Higher is faster but may hit rate limits."
+    )
     verbose = st.checkbox("Verbose Logs", value=False)
 
     st.header("Subtitle Style")
@@ -531,6 +538,7 @@ if st.button("Start", type="primary"):
             render_mode=render_mode,
             output_dir=output_dir,
             batch_size=batch_size,
+            translation_workers=translation_workers,
             verbose=verbose,
             style=SubtitleStyle(
                 font_name=resolved_font_name,

@@ -1,3 +1,4 @@
+import concurrent.futures
 import json
 import os
 import re
@@ -10,8 +11,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import jieba
-import torch
-import whisper
+from faster_whisper import WhisperModel
 from openai import OpenAI
 
 
@@ -153,6 +153,7 @@ class SubtitleJobConfig:
     render_mode: str = "burned"
     output_dir: Optional[str] = None
     batch_size: int = 10
+    translation_workers: int = 3
     verbose: bool = False
     ffmpeg_exe: str = "ffmpeg"
     model_size: str = "small"
@@ -202,8 +203,13 @@ class SubtitlePipeline:
             api_key=api_key,
             base_url="https://api.deepseek.com/v1",
         )
-        _device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.whisper_model = whisper.load_model(config.model_size, device=_device)
+        try:
+            import ctranslate2
+            _device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+        except Exception:
+            _device = "cpu"
+        _compute_type = "float16" if _device == "cuda" else "int8"
+        self.whisper_model = WhisperModel(config.model_size, device=_device, compute_type=_compute_type)
         self.config.style = self._sanitize_style(config.style)
         self.input_path = Path(config.input_video).resolve()
         self.output_video: Optional[str] = None
@@ -687,8 +693,7 @@ class SubtitlePipeline:
     def transcribe(self) -> list[dict]:
         self._log("[Step 1/4] Transcribing audio with Whisper...")
         self._report_progress("transcribe", 5, "Loading Whisper and transcribing audio")
-        transcribe_kwargs = {
-            "task": "transcribe",
+        transcribe_kwargs: dict = {
             "word_timestamps": True,
         }
         if self.config.source_language != "auto":
@@ -698,8 +703,25 @@ class SubtitlePipeline:
         else:
             self._log(" -> Whisper source language mode: auto detect")
 
-        result = self.whisper_model.transcribe(str(self.input_path), **transcribe_kwargs)
-        self.detected_source_language = self._normalize_language_code(result.get("language"))
+        # faster-whisper returns a lazy generator + info object (not a dict)
+        segments_iter, info = self.whisper_model.transcribe(str(self.input_path), **transcribe_kwargs)
+
+        # Materialise the generator and convert objects -> dicts so the rest
+        # of the pipeline works without any further changes.
+        segments: list[dict] = []
+        for seg in segments_iter:
+            words = [
+                {"word": w.word, "start": w.start, "end": w.end}
+                for w in (seg.words or [])
+            ]
+            segments.append({
+                "start": seg.start,
+                "end": seg.end,
+                "text": seg.text,
+                "words": words,
+            })
+
+        self.detected_source_language = self._normalize_language_code(info.language)
         if self.detected_source_language:
             label = self._get_language_config(self.detected_source_language)["label"]
             self._log(f" -> Detected source language: {label} ({self.detected_source_language})")
@@ -711,9 +733,8 @@ class SubtitlePipeline:
         self.output_video = self._build_output_video_path()
         self.output_srt = self._build_output_srt_path()
 
-        segments = result["segments"]
         if segments:
-            self.media_duration = max((segment.get("end", 0.0) for segment in segments), default=0.0) or None
+            self.media_duration = max(seg["end"] for seg in segments) or None
         self._report_progress("transcribe", 25, f"{len(segments)} segments")
         self._log(f" -> Transcription complete: {len(segments)} segments")
         return segments
@@ -842,33 +863,59 @@ class SubtitlePipeline:
                 for segment in segments
             ]
 
-        translated_segments: list[dict] = []
         total_segments = len(segments)
         total_batches = (total_segments + self.config.batch_size - 1) // self.config.batch_size
 
-        for batch_index, start in enumerate(range(0, total_segments, self.config.batch_size), start=1):
-            batch_segments = segments[start:start + self.config.batch_size]
-            batch_start = start + 1
-            batch_end = start + len(batch_segments)
+        # Build all batches upfront so we can submit them concurrently.
+        batches: list[tuple[int, int, list[dict]]] = [
+            (batch_index, start, segments[start:start + self.config.batch_size])
+            for batch_index, start in enumerate(range(0, total_segments, self.config.batch_size), start=1)
+        ]
+
+        # Log all batch starts before launching (keeps the log readable).
+        workers = min(self.config.translation_workers, total_batches)
+        self._log(f" -> {total_batches} batch(es), {workers} concurrent worker(s)")
+        for batch_index, start, batch_segs in batches:
             self._log(
-                f" -> Batch {batch_index}/{total_batches}: segments {batch_start}-{batch_end} ({len(batch_segments)} items)"
+                f" -> Batch {batch_index}/{total_batches}: segments {start + 1}-{start + len(batch_segs)}"
+                f" ({len(batch_segs)} items)"
             )
 
-            batch_result = self._translate_batch(batch_segments)
+        # Submit all batches concurrently and collect results keyed by batch_index.
+        batch_results: dict[int, tuple[int, list[dict], dict]] = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_meta = {
+                executor.submit(self._translate_batch, batch_segs): (batch_index, start, batch_segs)
+                for batch_index, start, batch_segs in batches
+            }
+            for future in concurrent.futures.as_completed(future_to_meta):
+                batch_index, start, batch_segs = future_to_meta[future]
+                try:
+                    batch_results[batch_index] = (start, batch_segs, future.result())
+                except Exception as exc:
+                    self._log(f" -> Batch {batch_index} raised an exception ({exc}), falling back to single translation")
+                    translations = [self._translate_single(seg["text"]) for seg in batch_segs]
+                    batch_results[batch_index] = (start, batch_segs, {"translations": translations, "missing_ids": []})
+
+        # Assemble translated_segments in original order and emit per-batch logs.
+        translated_segments: list[dict] = []
+        for batch_index in sorted(batch_results):
+            start, batch_segs, batch_result = batch_results[batch_index]
             translations = batch_result["translations"]
             missing_ids = batch_result["missing_ids"]
 
             if missing_ids:
-                missing_sentence_numbers = [start + missing_id + 1 for missing_id in missing_ids]
+                missing_sentence_numbers = [start + mid + 1 for mid in missing_ids]
                 self._log(
-                    f" -> Batch {batch_index} missed {len(missing_ids)} items, fallback to single translation for segments {', '.join(str(num) for num in missing_sentence_numbers)}"
+                    f" -> Batch {batch_index} missed {len(missing_ids)} items, fallback to single translation"
+                    f" for segments {', '.join(str(n) for n in missing_sentence_numbers)}"
                 )
-                for missing_id, sentence_number in zip(missing_ids, missing_sentence_numbers):
-                    original_text = batch_segments[missing_id]["text"]
+                for mid, sentence_number in zip(missing_ids, missing_sentence_numbers):
+                    original_text = batch_segs[mid]["text"]
                     summary = original_text.strip() if self.config.verbose else self._summarize_text(original_text)
                     self._log(f" -> Fallback segment {sentence_number}: {summary}")
 
-            for segment, translated_text in zip(batch_segments, translations):
+            for segment, translated_text in zip(batch_segs, translations):
                 translated_segments.append(
                     {
                         "start": segment["start"],
@@ -880,13 +927,14 @@ class SubtitlePipeline:
                 )
 
             self._log(
-                f" -> Batch {batch_index}/{total_batches} complete, processed {len(translated_segments)}/{total_segments} segments"
+                f" -> Batch {batch_index}/{total_batches} complete,"
+                f" processed {len(translated_segments)}/{total_segments} segments"
             )
             translate_percent = 25 + (30 * batch_index / total_batches)
             self._report_progress("translate", translate_percent, f"Batch {batch_index}/{total_batches}")
 
             if self.config.verbose:
-                for segment, translated_text in zip(batch_segments, translations):
+                for segment, translated_text in zip(batch_segs, translations):
                     self._log(f'    {segment["text"]} >>> {translated_text}')
 
         self._report_progress("translate", 55, "Translation complete")
