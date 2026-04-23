@@ -3,12 +3,14 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import Callable, Optional
 
 import jieba
+import torch
 import whisper
 from openai import OpenAI
 
@@ -200,16 +202,19 @@ class SubtitlePipeline:
             api_key=api_key,
             base_url="https://api.deepseek.com/v1",
         )
-        self.whisper_model = whisper.load_model(config.model_size)
+        _device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.whisper_model = whisper.load_model(config.model_size, device=_device)
         self.config.style = self._sanitize_style(config.style)
         self.input_path = Path(config.input_video).resolve()
         self.output_video: Optional[str] = None
         self.output_srt: Optional[str] = None
 
     def _log(self, message: str):
-        self.logs.append(message)
+        timestamp = time.strftime("%H:%M:%S")
+        stamped = f"[{timestamp}] {message}"
+        self.logs.append(stamped)
         if self.log_hook:
-            self.log_hook(message)
+            self.log_hook(stamped)
 
     def _report_progress(self, stage: str, percent: float, detail: str = ""):
         clamped_percent = max(0.0, min(100.0, float(percent)))
@@ -767,14 +772,27 @@ class SubtitlePipeline:
             ],
             temperature=0.3,
         )
+        raw_content = response.choices[0].message.content
         try:
-            parsed_items = self._parse_batch_translation(response.choices[0].message.content)
+            parsed_items = self._parse_batch_translation(raw_content)
         except (json.JSONDecodeError, ValueError) as exc:
             self._log(f" -> Batch translation parse failed ({exc}), falling back to single translation")
             translations = [self._translate_single(seg["text"]) for seg in batch_segments]
             return {"translations": translations, "missing_ids": []}
 
+        # Strategy 1: if the returned array length matches exactly, map by position (order-based).
+        # This avoids failures caused by the API returning 1-indexed ids instead of 0-indexed.
+        valid_items = [
+            item for item in parsed_items
+            if isinstance(item, dict) and isinstance(item.get("translation"), str)
+        ]
+        if len(valid_items) == len(batch_segments):
+            translations = [item["translation"].strip() for item in valid_items]
+            return {"translations": translations, "missing_ids": []}
+
+        # Strategy 2: fall back to id-based lookup, tolerating off-by-one id offsets.
         translation_map = {}
+        id_offset = 0
         for item in parsed_items:
             if not isinstance(item, dict):
                 continue
@@ -783,10 +801,14 @@ class SubtitlePipeline:
             if isinstance(item_id, int) and isinstance(translation, str):
                 translation_map[item_id] = translation.strip()
 
+        # Detect if the API returned 1-indexed ids when we sent 0-indexed.
+        if translation_map and 0 not in translation_map and 1 in translation_map:
+            id_offset = 1
+
         translations = []
         missing_ids = []
         for index, segment in enumerate(batch_segments):
-            translated_text = translation_map.get(index)
+            translated_text = translation_map.get(index + id_offset)
             if translated_text is not None:
                 translations.append(translated_text)
             else:
@@ -984,6 +1006,19 @@ class SubtitlePipeline:
         self._report_progress("write_srt", 60, "Subtitle file ready")
         return self.output_srt
 
+    def _probe_nvenc_available(self) -> bool:
+        """Return True if the local FFmpeg build includes the h264_nvenc encoder."""
+        try:
+            result = subprocess.run(
+                [self.config.ffmpeg_exe, "-hide_banner", "-encoders"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return "h264_nvenc" in result.stdout
+        except Exception:
+            return False
+
     def _subtitle_style_string(self) -> str:
         style = self.config.style
         return (
@@ -1019,6 +1054,23 @@ class SubtitlePipeline:
             subtitle_filter = (
                 f"subtitles='{subtitle_path}':force_style='{self._subtitle_style_string()}'"
             )
+            use_nvenc = self._probe_nvenc_available()
+            if use_nvenc:
+                self._log(" -> Encoder: h264_nvenc (GPU)")
+                encoder_args = [
+                    "-c:v", "h264_nvenc",
+                    "-preset", "p4",
+                    "-rc:v", "vbr",
+                    "-cq:v", "20",
+                    "-b:v", "0",
+                ]
+            else:
+                self._log(" -> Encoder: libx264 (CPU, NVENC not available)")
+                encoder_args = [
+                    "-c:v", "libx264",
+                    "-crf", "18",
+                    "-preset", "medium",
+                ]
             command = [
                 self.config.ffmpeg_exe,
                 "-loglevel", "warning",
@@ -1027,9 +1079,7 @@ class SubtitlePipeline:
                 "-y",
                 "-i", str(self.input_path),
                 "-vf", subtitle_filter,
-                "-c:v", "libx264",
-                "-crf", "18",
-                "-preset", "medium",
+                *encoder_args,
                 "-c:a", "copy",
                 self.output_video,
             ]
