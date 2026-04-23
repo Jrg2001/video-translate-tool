@@ -157,6 +157,7 @@ class SubtitleJobConfig:
     verbose: bool = False
     ffmpeg_exe: str = "ffmpeg"
     model_size: str = "small"
+    external_srt: Optional[str] = None
     style: SubtitleStyle = field(default_factory=SubtitleStyle)
 
 
@@ -195,21 +196,26 @@ class SubtitlePipeline:
         self.media_duration: Optional[float] = None
         self._last_reported_progress: float = -1.0
 
-        api_key = os.getenv("DEEPSEEK_API_KEY")
-        if not api_key:
-            raise ValueError("Missing DEEPSEEK_API_KEY. Configure it in the local .env file.")
-
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url="https://api.deepseek.com/v1",
-        )
-        try:
-            import ctranslate2
-            _device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
-        except Exception:
-            _device = "cpu"
-        _compute_type = "float16" if _device == "cuda" else "int8"
-        self.whisper_model = WhisperModel(config.model_size, device=_device, compute_type=_compute_type)
+        if not config.external_srt:
+            # Full pipeline: load Whisper model and DeepSeek client
+            api_key = os.getenv("DEEPSEEK_API_KEY")
+            if not api_key:
+                raise ValueError("Missing DEEPSEEK_API_KEY. Configure it in the local .env file.")
+            self.client = OpenAI(
+                api_key=api_key,
+                base_url="https://api.deepseek.com/v1",
+            )
+            try:
+                import ctranslate2
+                _device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+            except Exception:
+                _device = "cpu"
+            _compute_type = "float16" if _device == "cuda" else "int8"
+            self.whisper_model = WhisperModel(config.model_size, device=_device, compute_type=_compute_type)
+        else:
+            # Burn-only mode: transcription and translation are skipped entirely
+            self.client = None
+            self.whisper_model = None
         self.config.style = self._sanitize_style(config.style)
         self.input_path = Path(config.input_video).resolve()
         self.output_video: Optional[str] = None
@@ -1172,7 +1178,58 @@ class SubtitlePipeline:
         self._report_progress("done", 100, "Video output ready")
         return self.output_video
 
+    def _run_burn_only(self) -> SubtitleJobResult:
+        """Fast path: skip transcription and translation, burn a user-supplied SRT directly."""
+        try:
+            self._report_progress("start", 0, "Preparing burn-only job")
+
+            srt_path = Path(self.config.external_srt).resolve()
+            if not srt_path.exists():
+                raise FileNotFoundError(f"SRT file not found: {srt_path}")
+
+            self.output_srt = str(srt_path)
+
+            # Derive output video path from the input video stem
+            output_dir = (
+                Path(self.config.output_dir).resolve()
+                if self.config.output_dir
+                else self.input_path.parent
+            )
+            output_dir.mkdir(parents=True, exist_ok=True)
+            self.output_video = str(output_dir / f"{self.input_path.stem}_burn.mp4")
+
+            self._log("[Step 1/2] Using existing subtitle file...")
+            self._log(f" -> SRT: {self.output_srt}")
+            self._report_progress("write_srt", 50, "Using existing SRT")
+
+            self._log("[Step 2/2] Burning subtitles into video...")
+            self.render_video()
+
+            self._log("Done: burn-only job completed successfully.")
+            return SubtitleJobResult(
+                output_video=self.output_video,
+                output_srt=self.output_srt,
+                logs=self.logs,
+                success=True,
+            )
+        except Exception as exc:
+            self._report_progress(
+                "failed",
+                self._last_reported_progress if self._last_reported_progress >= 0 else 0,
+                str(exc),
+            )
+            self._log(f"Failed: {exc}")
+            return SubtitleJobResult(
+                output_video=None,
+                output_srt=None,
+                logs=self.logs,
+                success=False,
+                error=str(exc),
+            )
+
     def run(self) -> SubtitleJobResult:
+        if self.config.external_srt:
+            return self._run_burn_only()
         try:
             self._report_progress("start", 0, "Preparing job")
             segments = self.transcribe()

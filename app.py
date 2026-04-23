@@ -148,6 +148,14 @@ def pick_output_directory(initial_dir: str | None) -> tuple[str | None, str | No
 
 with st.sidebar:
     st.header("Job Settings")
+    job_mode = st.selectbox(
+        "Job Mode",
+        [
+            ("full", "Full Pipeline (Transcribe → Translate → Burn)"),
+            ("burn_only", "Burn Existing SRT"),
+        ],
+        format_func=lambda item: item[1],
+    )[0]
     input_source = st.selectbox(
         "Input Source",
         [("local_path", "Local File Path"), ("upload", "Upload File")],
@@ -163,6 +171,19 @@ with st.sidebar:
         )
     else:
         local_video_path = st.text_input("Local Video Path", value="")
+
+    # SRT path input — only shown in burn-only mode
+    # Pre-fill with the last generated SRT so the user doesn't have to retype it.
+    external_srt_path = ""
+    if job_mode == "burn_only":
+        _last_srt = (
+            (st.session_state.job_result or {}).get("output_srt") or ""
+        )
+        external_srt_path = st.text_input(
+            "Existing SRT File Path",
+            value=_last_srt,
+            help="Path to the .srt subtitle file you want to burn into the video. Edit it first with any text editor, then come back here.",
+        )
 
     output_dir_source = st.selectbox(
         "Output Directory Source",
@@ -231,43 +252,52 @@ with st.sidebar:
     st.caption(_det_label)
     # ──────────────────────────────────────────────────────────
 
-    source_language_options = ["auto", *LANGUAGE_CONFIG.keys()]
-    source_language = st.selectbox(
-        "Source Language",
-        source_language_options,
-        index=0,
-        format_func=lambda code: "Auto Detect" if code == "auto" else LANGUAGE_CONFIG[code]["label"],
-    )
-    target_language = st.selectbox(
-        "Target Language",
-        list(LANGUAGE_CONFIG.keys()),
-        index=0,
-        format_func=lambda code: LANGUAGE_CONFIG[code]["label"],
-    )
-    model_size = st.selectbox(
-        "Whisper Model",
-        ["tiny", "base", "small", "medium", "large"],
-        index=2,
-    )
-    st.caption("Smaller models are faster. Larger models are usually more accurate.")
-    subtitle_mode = st.selectbox(
-        "Subtitle Mode",
-        [("single", "Single Language"), ("bilingual", "Bilingual (top/bottom)")],
-        format_func=lambda item: item[1],
-    )[0]
+    if job_mode == "full":
+        source_language_options = ["auto", *LANGUAGE_CONFIG.keys()]
+        source_language = st.selectbox(
+            "Source Language",
+            source_language_options,
+            index=0,
+            format_func=lambda code: "Auto Detect" if code == "auto" else LANGUAGE_CONFIG[code]["label"],
+        )
+        target_language = st.selectbox(
+            "Target Language",
+            list(LANGUAGE_CONFIG.keys()),
+            index=0,
+            format_func=lambda code: LANGUAGE_CONFIG[code]["label"],
+        )
+        model_size = st.selectbox(
+            "Whisper Model",
+            ["tiny", "base", "small", "medium", "large"],
+            index=2,
+        )
+        st.caption("Smaller models are faster. Larger models are usually more accurate.")
+        subtitle_mode = st.selectbox(
+            "Subtitle Mode",
+            [("single", "Single Language"), ("bilingual", "Bilingual (top/bottom)")],
+            format_func=lambda item: item[1],
+        )[0]
+        batch_size = st.slider("Batch Size", min_value=1, max_value=20, value=10)
+        translation_workers = st.slider(
+            "Concurrent Translators",
+            min_value=1,
+            max_value=10,
+            value=3,
+            help="Number of concurrent translation batches sent to the API. Higher is faster but may hit rate limits."
+        )
+    else:
+        # Burn-only mode: use sensible defaults, no UI needed for these
+        source_language = "auto"
+        target_language = "zh"
+        model_size = "small"
+        subtitle_mode = "single"
+        batch_size = 10
+        translation_workers = 3
     render_mode = st.selectbox(
         "Render Mode",
         [("burned", "Burned Subtitle Video"), ("soft", "Soft Subtitle Video")],
         format_func=lambda item: item[1],
     )[0]
-    batch_size = st.slider("Batch Size", min_value=1, max_value=20, value=10)
-    translation_workers = st.slider(
-        "Concurrent Translators",
-        min_value=1,
-        max_value=10,
-        value=3,
-        help="Number of concurrent translation batches sent to the API. Higher is faster but may hit rate limits."
-    )
     verbose = st.checkbox("Verbose Logs", value=False)
 
     st.header("Subtitle Style")
@@ -522,10 +552,20 @@ if st.button("Start", type="primary"):
         st.session_state.selected_output_dir,
     )
 
+    # Validate SRT for burn-only mode
+    srt_error = None
+    if job_mode == "burn_only":
+        if not external_srt_path.strip():
+            srt_error = "Enter the path to your SRT file."
+        elif not Path(external_srt_path.strip()).exists():
+            srt_error = f"SRT file not found: {external_srt_path.strip()}"
+
     if input_error:
         result_placeholder.error(input_error)
     elif output_error:
         result_placeholder.error(output_error)
+    elif srt_error:
+        result_placeholder.error(srt_error)
     else:
         if output_dir_source == "manual":
             st.session_state.selected_output_dir = output_dir
@@ -540,6 +580,7 @@ if st.button("Start", type="primary"):
             batch_size=batch_size,
             translation_workers=translation_workers,
             verbose=verbose,
+            external_srt=external_srt_path.strip() or None,
             style=SubtitleStyle(
                 font_name=resolved_font_name,
                 font_size=font_size,
