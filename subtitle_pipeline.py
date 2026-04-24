@@ -10,9 +10,12 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Callable, Optional
 
-import jieba
+import budoux
 from faster_whisper import WhisperModel
 from openai import OpenAI
+
+# Module-level singleton — avoids reloading the model on every call.
+_BUDOUX_ZH_PARSER = budoux.load_default_simplified_chinese_parser()
 
 
 LANGUAGE_CONFIG = {
@@ -20,7 +23,7 @@ LANGUAGE_CONFIG = {
         "label": "Chinese (Simplified)",
         "translation_prompt": "natural Simplified Chinese",
         "subtitle_language_code": "chi",
-        "tokenizer": "jieba",
+        "tokenizer": "budoux",
     },
     "en": {
         "label": "English",
@@ -434,8 +437,9 @@ class SubtitlePipeline:
         language_profile = self._get_language_config(self.config.target_language)
         tokenizer = language_profile["tokenizer"]
 
-        if tokenizer == "jieba":
-            return [token.strip() for token in jieba.lcut(text, cut_all=False) if token.strip()]
+        if tokenizer == "budoux":
+            # Returns display-appropriate phrase chunks, not individual chars/words.
+            return _BUDOUX_ZH_PARSER.parse(text)
         if tokenizer == "whitespace":
             return [token for token in text.split() if token]
         return [char for char in text if not char.isspace()]
@@ -451,6 +455,8 @@ class SubtitlePipeline:
 
         if tokenizer == "whitespace":
             return self._split_english_tokens(tokens)
+        if tokenizer == "budoux":
+            return self._group_budoux_phrases(tokens, max_chars=20)
         if tokenizer == "char":
             return self._group_character_tokens(tokens, target_chars=18, max_chars=24)
         return self._group_character_tokens(tokens, target_chars=14, max_chars=18)
@@ -461,6 +467,17 @@ class SubtitlePipeline:
             "a", "an", "the",
             "to", "of", "in", "on", "at", "for", "by", "with", "from", "into", "onto",
             "and", "or", "but", "nor", "so", "yet",
+        }
+
+    def _is_weak_english_end(self, token: str) -> bool:
+        """Return True if this token is a poor choice to end a subtitle line on."""
+        normalized = token.strip(".,!?;:").lower()
+        return normalized in {
+            "a", "an", "the",
+            "to", "of", "in", "on", "at", "for", "by", "with", "as",
+            "and", "or", "but",
+            "his", "her", "its", "their", "our", "my", "your",
+            "not", "also",
         }
 
     def _score_english_break(self, left_tokens: list[str], right_tokens: list[str]) -> float:
@@ -498,6 +515,9 @@ class SubtitlePipeline:
             score -= 1.5
 
         if self._is_weak_english_start(right_tokens[0]):
+            score -= 4.5
+
+        if self._is_weak_english_end(left_tokens[-1]):
             score -= 4.5
 
         if left_word_count < 3:
@@ -571,11 +591,78 @@ class SubtitlePipeline:
 
         if len(merged_chunks) >= 2:
             last_words = merged_chunks[-1].split()
-            if len(last_words) < 3 or (last_words and self._is_weak_english_start(last_words[0])):
+            prev_words = merged_chunks[-2].split()
+            should_merge = (
+                len(last_words) < 3
+                or (last_words and self._is_weak_english_start(last_words[0]))
+                or (prev_words and self._is_weak_english_end(prev_words[-1]))
+            )
+            if should_merge:
                 merged_chunks[-2] = f"{merged_chunks[-2]} {merged_chunks[-1]}".strip()
                 merged_chunks.pop()
 
         return merged_chunks
+
+    def _is_dangling_chinese_phrase(self, phrase: str) -> bool:
+        """Return True if this budoux phrase is a modifier that shouldn't end a subtitle line.
+
+        Short phrases (≤ 4 chars) that start with a demonstrative, conjunction, or
+        preposition are treated as dangling — they should attach to whatever follows.
+        Examples: 这场、那次、并质疑、在于、且.
+        """
+        if not phrase:
+            return False
+        dangling_starters = set(
+            "这那此该某每各其"         # demonstratives / determiners
+            "并且或与和但而及还"        # conjunctions
+            "在于从向往对为以被把将让使" # prepositions / causatives
+            "如若当虽因"               # conditionals
+        )
+        return len(phrase) <= 4 and phrase[0] in dangling_starters
+
+    def _group_budoux_phrases(self, phrases: list[str], max_chars: int = 20) -> list[str]:
+        """Group budoux phrase tokens into subtitle lines by concatenating up to max_chars.
+
+        Unlike _group_character_tokens, tokens here are already display-appropriate
+        phrase chunks (e.g. ['国务卿', '马克·鲁比奥', '称赞了这次演讲']), so we
+        never split mid-phrase — we only break between phrase boundaries.
+
+        When the last phrase added to the current line is a dangling modifier
+        (e.g. '这场', '并质疑'), the next phrase is absorbed into the same line
+        before flushing, even if this causes a slight overrun of max_chars.
+        """
+        if not phrases:
+            return []
+
+        chunks: list[str] = []
+        current_line = ""
+        last_phrase = ""
+
+        for phrase in phrases:
+            if not current_line:
+                current_line = phrase
+                last_phrase = phrase
+            elif len(current_line) + len(phrase) <= max_chars:
+                current_line += phrase
+                last_phrase = phrase
+            else:
+                if self._is_dangling_chinese_phrase(last_phrase):
+                    # Absorb next phrase to fix the dangling end, then flush.
+                    # A slightly longer line is far better than a subtitle
+                    # ending on a dangling word like "这场" or "并质疑".
+                    current_line += phrase
+                    chunks.append(current_line)
+                    current_line = ""
+                    last_phrase = ""
+                else:
+                    chunks.append(current_line)
+                    current_line = phrase
+                    last_phrase = phrase
+
+        if current_line:
+            chunks.append(current_line)
+
+        return self._merge_short_chunks(chunks, min_length=4, separator="")
 
     def _group_character_tokens(self, tokens: list[str], target_chars: int, max_chars: int) -> list[str]:
         chunks: list[str] = []
@@ -1033,13 +1120,63 @@ class SubtitlePipeline:
             )
         return bilingual_chunks
 
+    def _merge_short_duration_chunks(self, chunks: list[dict], min_duration: float = 1.2) -> list[dict]:
+        """Merge any subtitle chunk shorter than min_duration seconds into its predecessor.
+
+        This should only be called on chunks from a *single* Whisper segment so that
+        short chunks are never merged across unrelated utterances.
+        """
+        if len(chunks) <= 1:
+            return chunks
+
+        # CJK languages do not use spaces between words; joining with a space
+        # produces "今天 下雨" style corruption.  Use an empty separator instead.
+        target_profile = self._get_language_config(self.config.target_language)
+        target_sep = "" if target_profile["tokenizer"] != "whitespace" else " "
+
+        # Apply the same logic to the source side: the source language is not
+        # always English — a Japanese or Chinese source video needs no space either.
+        source_lang = self.effective_source_language or "en"
+        source_profile = (
+            self._get_language_config(source_lang)
+            if source_lang in LANGUAGE_CONFIG
+            else {"tokenizer": "whitespace"}
+        )
+        source_sep = "" if source_profile["tokenizer"] != "whitespace" else " "
+
+        result = [chunks[0]]
+        for chunk in chunks[1:]:
+            duration = chunk["end"] - chunk["start"]
+            if duration < min_duration:
+                prev = result[-1]
+                if self._is_effective_bilingual():
+                    result[-1] = {
+                        "start": prev["start"],
+                        "end": chunk["end"],
+                        "source_text": (prev["source_text"] + source_sep + chunk["source_text"]).strip(),
+                        "translated_text": (prev["translated_text"] + target_sep + chunk["translated_text"]).strip(),
+                    }
+                else:
+                    result[-1] = {
+                        "start": prev["start"],
+                        "end": chunk["end"],
+                        "text": (prev["text"] + target_sep + chunk["text"]).strip(),
+                    }
+            else:
+                result.append(chunk)
+        return result
+
     def build_subtitle_chunks(self, translated_segments: list[dict]) -> list[dict]:
         subtitle_chunks: list[dict] = []
         for segment in translated_segments:
             if self._is_effective_bilingual():
-                subtitle_chunks.extend(self._split_bilingual_segment(segment))
+                seg_chunks = self._split_bilingual_segment(segment)
             else:
-                subtitle_chunks.extend(self._split_translated_segment(segment))
+                seg_chunks = self._split_translated_segment(segment)
+            # Merge short-duration chunks *within this segment only* to avoid
+            # concatenating unrelated utterances across Whisper segment boundaries.
+            seg_chunks = self._merge_short_duration_chunks(seg_chunks)
+            subtitle_chunks.extend(seg_chunks)
         return subtitle_chunks
 
     def write_srt(self, subtitle_chunks: list[dict]) -> str:
