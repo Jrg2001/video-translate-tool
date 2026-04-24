@@ -293,11 +293,16 @@ with st.sidebar:
         subtitle_mode = "single"
         batch_size = 10
         translation_workers = 3
-    render_mode = st.selectbox(
-        "Render Mode",
-        [("burned", "Burned Subtitle Video"), ("soft", "Soft Subtitle Video")],
-        format_func=lambda item: item[1],
-    )[0]
+    if job_mode == "full":
+        render_mode = st.selectbox(
+            "Render Mode",
+            [("burned", "Burned Subtitle Video"), ("soft", "Soft Subtitle Video")],
+            format_func=lambda item: item[1],
+        )[0]
+    else:
+        # burn_only is inherently about re-burning subtitles; soft mode in this
+        # context is contradictory and would produce a confusingly named output.
+        render_mode = "burned"
     verbose = st.checkbox("Verbose Logs", value=False)
 
     st.header("Subtitle Style")

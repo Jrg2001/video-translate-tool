@@ -957,6 +957,11 @@ class SubtitlePipeline:
             ]
 
         total_segments = len(segments)
+        if total_segments == 0:
+            self._log(" -> No speech segments returned by Whisper. Skipping translation.")
+            self._report_progress("translate", 55, "No segments")
+            return []
+
         total_batches = (total_segments + self.config.batch_size - 1) // self.config.batch_size
 
         # Build all batches upfront so we can submit them concurrently.
@@ -1271,7 +1276,8 @@ class SubtitlePipeline:
                 "-i", str(self.input_path),
                 "-vf", subtitle_filter,
                 *encoder_args,
-                "-c:a", "copy",
+                "-c:a", "aac",
+                "-q:a", "2",
                 self.output_video,
             ]
 
