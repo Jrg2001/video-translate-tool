@@ -8,11 +8,11 @@ services:
     volumes:
       # 输出文件持久化到宿主机
       - ./outputs:/root/video_translate_outputs
-      # Whisper 模型缓存（避免每次重启重新下载）
-      - whisper-cache:/root/.cache/whisper
+      # faster-whisper 通过 HuggingFace 缓存模型，路径与旧版 openai-whisper 不同
+      - huggingface-cache:/root/.cache/huggingface
     env_file:
       - .env
     restart: unless-stopped
 
 volumes:
-  whisper-cache:
+  huggingface-cache:

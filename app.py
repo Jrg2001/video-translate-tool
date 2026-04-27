@@ -472,7 +472,7 @@ def resolve_input_video_path(
         input_path.write_bytes(uploaded_video.getbuffer())
         return str(input_path), None
 
-    raw_path = local_path_value.strip()
+    raw_path = local_path_value.strip().strip('"').strip("'")
     if not raw_path:
         return None, "Enter a local video path first."
 

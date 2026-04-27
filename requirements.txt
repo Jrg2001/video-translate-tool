@@ -1,4 +1,4 @@
 openai
 faster-whisper
-jieba
+budoux
 streamlit
