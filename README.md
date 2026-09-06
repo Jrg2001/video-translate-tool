@@ -2,6 +2,16 @@
 
 Local video processing tool for transcription, translation, subtitle generation, and subtitle rendering.
 
+## Windows 一键启动
+
+完成下方依赖安装后，双击项目根目录的 **`start.cmd`** 即可启动网页界面，无需输入启动命令。
+
+- 脚本优先使用项目内的 `.venv` / `venv`，否则使用系统的 `python` 或 `py -3`，要求 Python 3.10 或更新版本。
+- 浏览器会自动打开；如果未打开，访问 `http://localhost:8501`。
+- 使用期间保留命令窗口，关闭窗口即可停止服务。不要重复启动多个窗口。
+- 缺少 Python 或依赖时，窗口会保留并显示提示。FFmpeg 和 API Key 仍按下方说明配置。
+- 该脚本仅监听本机地址，适合在自己的电脑上使用。
+
 ## Install
 
 ```bash
