@@ -1,6 +1,52 @@
-# video-translate-tool
+# video-translate-tool 视频字幕翻译工具
 
-Local video processing tool for transcription, translation, subtitle generation, and subtitle rendering.
+本地运行的视频处理工具，一站式完成 **语音转写 → 字幕翻译 → 生成 SRT → 烧录字幕视频**。
+
+- 基于 `faster-whisper` 进行语音识别，自动选择 GPU / CPU
+- 基于 DeepSeek API 并发批量翻译字幕
+- 支持单语 / 双语字幕、硬字幕 / 软字幕输出
+- 提供 Streamlit 网页界面，支持中英文界面切换和字幕样式实时预览
+
+## 效果展示
+
+### 主界面
+
+左侧边栏用于配置任务，右侧可以实时预览字幕样式。
+
+![主界面（中文）](docs/images/ui-overview-zh.png)
+
+### 完整设置项
+
+侧边栏包含任务模式、视频来源、输出目录、语言、Whisper 模型、翻译批次与并发数、输出方式和字幕样式等全部设置。
+
+<details>
+<summary>点击展开完整页面截图</summary>
+
+![完整设置项](docs/images/ui-full-zh.png)
+
+</details>
+
+### 英文界面
+
+点击右上角的 **中文 / English** 即可切换界面语言，已填写的设置和任务结果会保留。
+
+![主界面（English）](docs/images/ui-overview-en.png)
+
+### 双语字幕输出示例
+
+双语模式下，第一行为原文，第二行为目标语言译文（以下为示意内容）：
+
+```srt
+1
+00:00:00,000 --> 00:00:03,200
+Welcome back to the channel.
+欢迎回到本频道。
+
+2
+00:00:03,200 --> 00:00:06,800
+Today we're going to talk about subtitles.
+今天我们来聊聊字幕。
+```
 
 ## Windows 一键启动
 
@@ -12,36 +58,42 @@ Local video processing tool for transcription, translation, subtitle generation,
 - 缺少 Python 或依赖时，窗口会保留并显示提示。FFmpeg 和 API Key 仍按下方说明配置。
 - 该脚本仅监听本机地址，适合在自己的电脑上使用。
 
-## Install
+## 界面语言
+
+页面右上角提供 **中文 / English** 切换，默认显示中文。切换后，界面标签、选项、帮助说明、进度状态和下载按钮会同步更新，并保留当前已输入的设置、上传视频和任务结果。界面语言与视频源语言、字幕目标语言相互独立；切换界面语言不会重新运行任务。
+
+此功能要求 Streamlit 1.55.0 或更新版本，以确保切换文案时保留控件状态。已有环境请重新运行 `pip install -r requirements.txt`。底层技术日志、第三方错误和 Streamlit 上传组件内置提示保留原文，便于排查问题。
+
+## 安装
 
 ```bash
 pip install -r requirements.txt
 ```
 
-FFmpeg must be available in your system `PATH`.
+系统 `PATH` 中需要能找到 FFmpeg。
 
-Create a local `.env` file:
+在项目根目录创建 `.env` 文件：
 
 ```env
 DEEPSEEK_API_KEY=your_api_key_here
 ```
 
-## Linux Deployment
+## Linux 部署
 
-### System Dependencies
+### 系统依赖
 
 ```bash
-# FFmpeg and ffprobe
+# FFmpeg 和 ffprobe
 sudo apt install -y ffmpeg
 
-# CJK fonts for burned subtitle rendering
+# 中日韩字体，用于硬字幕渲染
 sudo apt install -y fonts-noto-cjk
 
-# Audio decoding library
+# 音频解码库
 sudo apt install -y libsndfile1
 ```
 
-### Option A: Direct Deployment (single server / LAN)
+### 方式 A：直接部署（单机 / 局域网）
 
 ```bash
 python3 -m venv .venv
@@ -49,12 +101,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Fill in DEEPSEEK_API_KEY
+# 填写 DEEPSEEK_API_KEY
 
 streamlit run app.py --server.port 8501 --server.address 0.0.0.0
 ```
 
-To run as a persistent background service, copy `video-translate.service` to `/etc/systemd/system/`, edit the `User` and `WorkingDirectory` fields, then:
+如需作为常驻后台服务运行，将 `video-translate.service` 复制到 `/etc/systemd/system/`，修改其中的 `User` 和 `WorkingDirectory` 字段，然后执行：
 
 ```bash
 sudo systemctl daemon-reload
@@ -62,171 +114,168 @@ sudo systemctl enable video-translate
 sudo systemctl start video-translate
 ```
 
-### Option B: Docker (recommended for production)
+### 方式 B：Docker（推荐用于生产环境）
 
 ```bash
 cp .env.example .env
-# Fill in DEEPSEEK_API_KEY
+# 填写 DEEPSEEK_API_KEY
 
 docker compose up -d
 ```
 
-The app will be available at `http://<server-ip>:8501`.
+启动后访问 `http://<服务器IP>:8501`。
 
-Output files are persisted to `./outputs/` on the host. Whisper model weights are cached in a named Docker volume so they survive container restarts.
+输出文件会持久化到宿主机的 `./outputs/` 目录。Whisper 模型权重缓存在 Docker 命名卷中，容器重启后不会丢失。
 
-## Run The Script
+## 运行方式
+
+### 命令行脚本
 
 ```powershell
 python transfer_video_burn.py
 ```
 
-The default script example writes outputs to `D:\transfer\outputs`.
+脚本默认示例会把输出写入 `D:\transfer\outputs`。
 
-## Run The Streamlit App
+### Streamlit 网页界面
 
 ```powershell
 streamlit run app.py
 ```
 
-## Job Modes
+## 任务模式
 
-The sidebar **Job Mode** selector offers two operating modes:
+侧边栏的 **任务模式** 提供两种运行方式：
 
-### Full Pipeline (Transcribe → Translate → Burn)
+### 完整流程（转写 → 翻译 → 烧录）
 
-The default mode. Runs the complete pipeline end-to-end:
+默认模式，端到端执行完整流程：
 
-1. **Transcribe** — Whisper extracts speech and word-level timestamps from the video audio.
-2. **Translate** — DeepSeek translates subtitle segments in concurrent batches.
-3. **Write SRT** — Subtitles are split into timed chunks and written to a `.srt` file.
-4. **Burn** — FFmpeg renders the subtitled video (GPU-accelerated when NVENC is available).
+1. **转写**：Whisper 从视频音频中提取语音和逐词时间戳。
+2. **翻译**：DeepSeek 以并发批次翻译字幕片段。
+3. **生成 SRT**：将字幕切分为带时间轴的片段并写入 `.srt` 文件。
+4. **烧录**：FFmpeg 渲染带字幕的视频（支持 NVENC 时自动使用 GPU 加速）。
 
-### Burn Existing SRT
+### 使用已有 SRT 烧录字幕
 
-Skips transcription and translation entirely. Use this after editing a generated `.srt` file to re-render the video without re-running the pipeline. The total render time is typically under 10 seconds.
+完全跳过转写和翻译。适用于手动修改生成的 `.srt` 文件后重新渲染视频，无需重跑整个流程，渲染通常在 10 秒内完成。
 
-**Workflow:**
-1. Run **Full Pipeline** to generate the initial `.srt` and video.
-2. Open the `.srt` file in any text editor and make corrections.
-3. Switch **Job Mode** to **Burn Existing SRT**. The SRT path is pre-filled from the previous run.
-4. Click **Start** — FFmpeg re-renders the video using the edited subtitles.
+**使用流程：**
 
-## Input / Output
+1. 先运行 **完整流程**，生成初始的 `.srt` 文件和视频。
+2. 用任意文本编辑器打开 `.srt` 文件并修正内容。
+3. 将 **任务模式** 切换为 **使用已有 SRT 烧录字幕**，SRT 路径会自动填入上一次的结果。
+4. 点击 **开始处理**，FFmpeg 会使用修改后的字幕重新渲染视频。
 
-The Streamlit app supports two input modes:
+## 输入与输出
 
-- `Local File Path`
-- `Upload File`
+视频来源支持两种方式：
 
-`Upload File` supports videos up to 2GB. For larger videos or normal local use, prefer `Local File Path`.
+- **本地文件路径**
+- **上传文件**
 
-The sidebar supports two output directory modes:
+**上传文件** 支持最大 2GB 的视频。处理更大的视频或在本机日常使用时，推荐使用 **本地文件路径**。
 
-- `Manual Path`
-- `Browse Folder`
+输出目录支持两种选择方式：
 
-`Browse Folder` opens the local system folder picker. If the current environment does not support desktop dialogs, use `Manual Path`.
+- **手动输入路径**
+- **浏览文件夹**
 
-## GPU Acceleration
+**浏览文件夹** 会打开系统的文件夹选择对话框。如果当前环境不支持桌面对话框（如服务器部署），请使用 **手动输入路径**。
 
-### Whisper Transcription
+## GPU 加速
 
-`faster-whisper` is used for transcription. It uses CTranslate2 as its inference engine and does not require PyTorch. When a CUDA-capable GPU is detected at startup, the model runs in `float16` mode. On CPU, it uses `int8` quantization, which is still significantly faster than the original `openai-whisper`.
+### Whisper 转写
 
-### FFmpeg Video Rendering
+转写使用 `faster-whisper`，推理引擎为 CTranslate2，不依赖 PyTorch。启动时检测到支持 CUDA 的 GPU 会以 `float16` 模式运行；在 CPU 上则使用 `int8` 量化，速度仍明显快于原版 `openai-whisper`。
 
-The burn step automatically detects whether the local FFmpeg build supports `h264_nvenc` (NVIDIA hardware encoder). If available, NVENC is used for GPU-accelerated rendering. Otherwise, it falls back to `libx264` (CPU).
+### FFmpeg 视频渲染
 
-Typical render times for a 2-minute video:
+烧录步骤会自动检测本机 FFmpeg 是否支持 `h264_nvenc`（NVIDIA 硬件编码器）。支持时使用 NVENC 进行 GPU 加速渲染，否则回退到 `libx264`（CPU）。
 
-| Encoder | Time |
+2 分钟视频的典型渲染耗时：
+
+| 编码器 | 耗时 |
 |---|---|
-| `libx264` (CPU) | ~36 seconds |
-| `h264_nvenc` (GPU) | ~5 seconds |
+| `libx264`（CPU） | 约 36 秒 |
+| `h264_nvenc`（GPU） | 约 5 秒 |
 
-## Translation Settings
+## 翻译设置
 
-### Whisper Model
+### Whisper 模型
 
-| Model | Speed | Accuracy |
+| 模型 | 速度 | 准确度 |
 |---|---|---|
-| `tiny` | Fastest | Lowest |
-| `base` | Fast | Low |
-| `small` | Balanced (default) | Good |
-| `medium` | Slow | Better |
-| `large` | Slowest | Best |
+| `tiny` | 最快 | 最低 |
+| `base` | 快 | 较低 |
+| `small` | 均衡（默认） | 良好 |
+| `medium` | 慢 | 较好 |
+| `large` | 最慢 | 最好 |
 
-### Concurrent Translators
+### 翻译并发数
 
-Controls the number of translation batches sent to the DeepSeek API simultaneously. The default is `3`. Higher values reduce translation time for longer videos but may trigger API rate limits.
+控制同时发送给 DeepSeek API 的翻译批次数量，默认为 `3`。数值越大，长视频的翻译耗时越短，但可能触发 API 限流。
 
-### Batch Size
+### 每批翻译条数
 
-Number of subtitle segments per translation request. Default is `10`.
+每次翻译请求包含的字幕片段数量，默认为 `10`。
 
-## Supported Target Languages
+## 语言支持
 
-- Chinese (Simplified)
-- English
-- Japanese
-- Korean
+字幕目标语言支持：
 
-The UI also supports `Source Language`, with `Auto Detect` as the default option.
+- 简体中文
+- 英语
+- 日语
+- 韩语
 
-Auto Detect uses Whisper language detection.
+界面同时提供 **视频源语言** 选项，默认为 **自动识别**，使用 Whisper 的语言检测功能。
 
-A manual source language selection is treated as a hint for Whisper. If the manual value conflicts with Whisper's detected language, the detected result is used for downstream logic.
+- 手动选择的源语言会作为 Whisper 的识别提示。如果与 Whisper 实际检测结果不一致，后续处理以检测结果为准。
+- 双语模式下，第一行保留原文字幕，第二行为所选目标语言的译文。
+- 源语言与目标语言相同时，双语输出会自动降级为单语字幕，避免重复显示。
+- 源语言与目标语言相同时，会跳过翻译步骤，直接使用 Whisper 转写文本，节省 API 费用。
+- 非中文目标语言采用较简单的首轮切分策略，优先保证稳定性和字幕长度的可读性。
+- 软字幕输出会根据所选目标语言写入字幕语言元数据。
 
-In bilingual mode, the first line stays as the source subtitle and the second line is translated into the selected target language.
+## 字幕样式
 
-If the source language matches the target language, bilingual output is automatically downgraded to single-language subtitles to avoid duplicate lines.
+侧边栏支持以下字幕样式设置：
 
-If the source language matches the target language, the translation step is skipped and the Whisper transcript is used directly to avoid unnecessary API cost.
+- 样式预设（Netflix、YouTube、Bilibili、经典电影、自定义）
+- 字体预设
+- 自定义字体名称
+- 字体大小
+- 文字颜色
+- 描边颜色
+- 底部边距
+- 视频方向（自动识别横屏 16:9 / 竖屏 9:16）
+- 实时字幕样式预览面板
 
-Non-Chinese target languages use a simpler first-pass chunking strategy focused on stability and readable subtitle lengths.
+以上设置作用于硬字幕；软字幕的外观由视频播放器决定。
 
-Soft subtitle outputs write subtitle language metadata based on the selected target language.
+双语字幕目前对原文行和译文行使用相同的样式。
 
-## Subtitle Style In The UI
+如果所选字体未安装在系统中，FFmpeg 可能会使用其他字体代替。界面提供了适合多语言字幕的常用字体预设，也支持按需填写自定义字体名称。
 
-The Streamlit sidebar supports these subtitle style settings:
+## 功能一览
 
-- Style preset (Netflix, YouTube, Bilibili, Classic Film, Custom)
-- Font preset
-- Custom font name
-- Font size
-- Text color
-- Outline color
-- Bottom margin
-- Video orientation (Auto-detects Landscape 16:9 / Portrait 9:16)
-- Real-time subtitle style preview panel
+- 单语字幕
+- 双语字幕（原文在上，译文在下）
+- 硬字幕视频输出（可用时通过 NVENC 进行 GPU 加速）
+- 软字幕视频输出
+- 目标语言支持中文、英语、日语、韩语
+- faster-whisper 转写，自动选择 GPU / CPU
+- 并发批量翻译，减少 API 等待时间
+- 仅烧录模式：修改 SRT 后直接重新渲染，无需重跑完整流程
+- 中文 / English 界面切换
 
-These settings are applied to burned subtitles. Soft subtitle appearance depends on the video player.
+## 已知问题
 
-Bilingual subtitles currently use the same style for both the source line and the translated line.
+### Docker 中的 GPU 加速
 
-If the selected font is not installed on the system, FFmpeg may fall back to a different font.
+当前 `Dockerfile` 使用轻量基础镜像 `python:3.11-slim`，不包含 CUDA 运行时，因此容器内的 Whisper 转写和 FFmpeg 编码都会在 CPU 上运行。
 
-The UI provides common font presets for multilingual subtitle use, while still allowing a custom font name when needed.
+如需在 Docker 中启用 GPU 加速，请将基础镜像替换为合适的 `nvidia/cuda` 镜像，在宿主机安装 NVIDIA Container Toolkit，并使用 `--gpus all` 运行容器。
 
-## Features
-
-- Single-language subtitles
-- Bilingual subtitles with source text on top and translated text below
-- Burned subtitle video output (GPU-accelerated via NVENC when available)
-- Soft subtitle video output
-- Target language support for Chinese, English, Japanese, and Korean
-- faster-whisper transcription with automatic GPU/CPU selection
-- Concurrent batch translation to reduce API wait time
-- Burn-only mode for re-rendering with an edited SRT without re-running the full pipeline
-
-## Known Issues
-
-### Docker GPU Acceleration
-
-The provided `Dockerfile` uses a lightweight base image (`python:3.11-slim`) that does not include a CUDA runtime. Whisper transcription and FFmpeg NVENC encoding will run on CPU inside the container.
-
-To enable GPU acceleration in Docker, replace the base image with an appropriate `nvidia/cuda` image and ensure NVIDIA Container Toolkit is installed on the host. Run the container with `--gpus all`.
-
-This is a planned enhancement for environments with NVIDIA GPU servers.
+这是面向 NVIDIA GPU 服务器环境的计划改进项。
