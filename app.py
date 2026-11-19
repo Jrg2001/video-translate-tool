@@ -7,8 +7,29 @@ from pathlib import Path
 import streamlit as st
 
 from subtitle_pipeline import FONT_PRESETS, LANGUAGE_CONFIG, STYLE_PRESETS, SubtitleJobConfig, SubtitleStyle, hex_to_ass_colour, run_subtitle_job
+from ui_i18n import translate, translate_detail
 
 SUPPORTED_VIDEO_EXTENSIONS = (".mp4", ".mkv", ".mov", ".avi", ".webm")
+# Selectbox/radio widgets whose labels are translated via format_func.
+TRANSLATED_CHOICE_STATE_KEYS = (
+    "job_mode", "input_source", "output_dir_source", "source_language",
+    "target_language", "subtitle_mode", "render_mode",
+    "ui_style_preset", "ui_font_preset", "ui_orientation",
+)
+
+
+def t(message: str, **values) -> str:
+    return translate(message, interface_language, **values)
+
+
+def on_interface_language_change() -> None:
+    """Resend selected labels without changing the underlying option values."""
+    # A new format_func updates options, but the browser can retain the old
+    # selected label. Writing the same value back makes Streamlit explicitly
+    # send its freshly translated label on the next render.
+    for key in TRANSLATED_CHOICE_STATE_KEYS:
+        if key in st.session_state:
+            st.session_state[key] = st.session_state[key]
 
 
 def ass_to_hex(ass_color: str) -> str:
@@ -106,12 +127,24 @@ def _on_orientation_change() -> None:
     )
 
 
-st.set_page_config(page_title="Video Translate Tool", layout="wide")
+st.session_state.setdefault("ui_language", "zh")
+interface_language = st.session_state.ui_language
+st.set_page_config(page_title=t("Video Translate Tool"), layout="wide")
 
-
-
-st.title("Video Translate Tool")
-st.caption("Local video translation with single or bilingual subtitle output.")
+title_column, language_column = st.columns([5, 2])
+with language_column:
+    st.radio(
+        "界面语言 / Language",
+        ["zh", "en"],
+        format_func=lambda language: {"zh": "中文", "en": "English"}[language],
+        key="ui_language",
+        on_change=on_interface_language_change,
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+with title_column:
+    st.title(t("Video Translate Tool"))
+    st.caption(t("Local video translation with single or bilingual subtitle output."))
 
 if "job_logs" not in st.session_state:
     st.session_state.job_logs = []
@@ -142,35 +175,38 @@ def pick_output_directory(initial_dir: str | None) -> tuple[str | None, str | No
         selected_dir = filedialog.askdirectory(initialdir=initial_dir or None)
         root.destroy()
     except Exception:
-        return None, "Folder picker is unavailable in the current environment. Use Manual Path instead."
+        return None, t("Folder picker is unavailable in the current environment. Use Manual Path instead.")
 
     return selected_dir or None, None
 
 with st.sidebar:
-    st.header("Job Settings")
+    st.header(t("Job Settings"))
     job_mode = st.selectbox(
-        "Job Mode",
+        t("Job Mode"),
         [
             ("full", "Full Pipeline (Transcribe → Translate → Burn)"),
             ("burn_only", "Burn Existing SRT"),
         ],
-        format_func=lambda item: item[1],
+        format_func=lambda item: t(item[1]),
+        key="job_mode",
     )[0]
     input_source = st.selectbox(
-        "Input Source",
+        t("Input Source"),
         [("local_path", "Local File Path"), ("upload", "Upload File")],
         index=0,
-        format_func=lambda item: item[1],
+        format_func=lambda item: t(item[1]),
+        key="input_source",
     )[0]
     uploaded_file = None
     local_video_path = ""
     if input_source == "upload":
         uploaded_file = st.file_uploader(
-            "Upload Video",
+            t("Upload Video"),
             type=[ext.lstrip(".") for ext in SUPPORTED_VIDEO_EXTENSIONS],
+            key="uploaded_video",
         )
     else:
-        local_video_path = st.text_input("Local Video Path", value="")
+        local_video_path = st.text_input(t("Local Video Path"), value="", key="local_video_path")
 
     # SRT path input — only shown in burn-only mode
     # Pre-fill with the last generated SRT so the user doesn't have to retype it.
@@ -180,40 +216,44 @@ with st.sidebar:
             (st.session_state.job_result or {}).get("output_srt") or ""
         )
         external_srt_path = st.text_input(
-            "Existing SRT File Path",
+            t("Existing SRT File Path"),
             value=_last_srt,
-            help="Path to the .srt subtitle file you want to burn into the video. Edit it first with any text editor, then come back here.",
+            key="external_srt_path",
+            help=t("Path to the .srt subtitle file you want to burn into the video. Edit it first with any text editor, then come back here."),
         )
 
     output_dir_source = st.selectbox(
-        "Output Directory Source",
+        t("Output Directory Source"),
         [("manual", "Manual Path"), ("browse", "Browse Folder")],
         index=0,
-        format_func=lambda item: item[1],
+        format_func=lambda item: t(item[1]),
+        key="output_dir_source",
     )[0]
     manual_output_dir = ""
     if output_dir_source == "manual":
         manual_output_dir = st.text_input(
-            "Output Directory",
+            t("Output Directory"),
             value=st.session_state.selected_output_dir,
+            key="manual_output_dir",
         )
     else:
+        st.session_state["output_dir_display"] = st.session_state.selected_output_dir
         st.text_input(
-            "Selected Output Directory",
-            value=st.session_state.selected_output_dir,
+            t("Selected Output Directory"),
             disabled=True,
+            key="output_dir_display",
         )
-        if st.button("Browse Folder"):
+        if st.button(t("Browse Folder"), key="browse_output_directory"):
             selected_dir, picker_error = pick_output_directory(st.session_state.selected_output_dir)
             if picker_error:
                 st.warning(picker_error)
             elif selected_dir:
                 st.session_state.selected_output_dir = selected_dir
                 st.rerun()
-        st.caption("Browse Folder opens the local system folder picker.")
-        st.caption("If folder browsing is unavailable in the current environment, use Manual Path instead.")
-    st.caption("Upload File supports videos up to 2GB.")
-    st.caption("For larger files or local use, choose Local File Path.")
+        st.caption(t("Browse Folder opens the local system folder picker."))
+        st.caption(t("If folder browsing is unavailable in the current environment, use Manual Path instead."))
+    st.caption(t("Upload File supports videos up to 2GB."))
+    st.caption(t("For larger files or local use, choose Local File Path."))
 
     # ── Auto-detect video orientation ─────────────────────────────────────
     _vid_key = ""
@@ -243,47 +283,53 @@ with st.sidebar:
     ) if _vid_key else "🔍 No video selected—defaulting to Landscape"
 
     st.radio(
-        "Video Orientation",
+        t("Video Orientation"),
         ["Landscape (16:9)", "Portrait (9:16)"],
+        format_func=t,
         key="ui_orientation",
         on_change=_on_orientation_change,
-        help="Auto-detected from the selected video. You can override manually.",
+        help=t("Auto-detected from the selected video. You can override manually."),
     )
-    st.caption(_det_label)
+    st.caption(t(_det_label))
     # ──────────────────────────────────────────────────────────
 
     if job_mode == "full":
         source_language_options = ["auto", *LANGUAGE_CONFIG.keys()]
         source_language = st.selectbox(
-            "Source Language",
+            t("Source Language"),
             source_language_options,
             index=0,
-            format_func=lambda code: "Auto Detect" if code == "auto" else LANGUAGE_CONFIG[code]["label"],
+            format_func=lambda code: t("Auto Detect" if code == "auto" else LANGUAGE_CONFIG[code]["label"]),
+            key="source_language",
         )
         target_language = st.selectbox(
-            "Target Language",
+            t("Target Language"),
             list(LANGUAGE_CONFIG.keys()),
             index=0,
-            format_func=lambda code: LANGUAGE_CONFIG[code]["label"],
+            format_func=lambda code: t(LANGUAGE_CONFIG[code]["label"]),
+            key="target_language",
         )
         model_size = st.selectbox(
-            "Whisper Model",
+            t("Whisper Model"),
             ["tiny", "base", "small", "medium", "large"],
             index=2,
+            key="model_size",
         )
-        st.caption("Smaller models are faster. Larger models are usually more accurate.")
+        st.caption(t("Smaller models are faster. Larger models are usually more accurate."))
         subtitle_mode = st.selectbox(
-            "Subtitle Mode",
+            t("Subtitle Mode"),
             [("single", "Single Language"), ("bilingual", "Bilingual (top/bottom)")],
-            format_func=lambda item: item[1],
+            format_func=lambda item: t(item[1]),
+            key="subtitle_mode",
         )[0]
-        batch_size = st.slider("Batch Size", min_value=1, max_value=20, value=10)
+        batch_size = st.slider(t("Batch Size"), min_value=1, max_value=20, value=10, key="batch_size")
         translation_workers = st.slider(
-            "Concurrent Translators",
+            t("Concurrent Translators"),
             min_value=1,
             max_value=10,
             value=3,
-            help="Number of concurrent translation batches sent to the API. Higher is faster but may hit rate limits."
+            key="translation_workers",
+            help=t("Number of concurrent translation batches sent to the API. Higher is faster but may hit rate limits.")
         )
     else:
         # Burn-only mode: use sensible defaults, no UI needed for these
@@ -295,34 +341,37 @@ with st.sidebar:
         translation_workers = 3
     if job_mode == "full":
         render_mode = st.selectbox(
-            "Render Mode",
+            t("Render Mode"),
             [("burned", "Burned Subtitle Video"), ("soft", "Soft Subtitle Video")],
-            format_func=lambda item: item[1],
+            format_func=lambda item: t(item[1]),
+            key="render_mode",
         )[0]
     else:
         # burn_only is inherently about re-burning subtitles; soft mode in this
         # context is contradictory and would produce a confusingly named output.
         render_mode = "burned"
-    verbose = st.checkbox("Verbose Logs", value=False)
+    verbose = st.checkbox(t("Verbose Logs"), value=False, key="verbose")
 
-    st.header("Subtitle Style")
+    st.header(t("Subtitle Style"))
 
     st.selectbox(
-        "Style Preset",
+        t("Style Preset"),
         list(STYLE_PRESETS.keys()),
+        format_func=t,
         key="ui_style_preset",
         on_change=on_style_preset_change,
     )
 
     font_preset_options = [label for label, _ in FONT_PRESETS]
     font_preset = st.selectbox(
-        "Font Preset",
+        t("Font Preset"),
         font_preset_options,
+        format_func=t,
         key="ui_font_preset",
     )
     custom_font_name = ""
     if font_preset == "Custom":
-        custom_font_name = st.text_input("Custom Font Name", value="")
+        custom_font_name = st.text_input(t("Custom Font Name"), value="", key="custom_font_name")
 
     selected_font_name = next(
         (font_name for label, font_name in FONT_PRESETS if label == font_preset),
@@ -334,30 +383,30 @@ with st.sidebar:
         else selected_font_name or "Noto Sans CJK SC"
     )
 
-    font_size = st.slider("Font Size", min_value=12, max_value=40, value=20, key="ui_font_size")
-    text_color = st.color_picker("Text Color", value="#FFFFFF", key="ui_text_color")
-    outline_color = st.color_picker("Outline Color", value="#000000", key="ui_outline_color")
+    font_size = st.slider(t("Font Size"), min_value=12, max_value=40, value=20, key="ui_font_size")
+    text_color = st.color_picker(t("Text Color"), value="#FFFFFF", key="ui_text_color")
+    outline_color = st.color_picker(t("Outline Color"), value="#000000", key="ui_outline_color")
     _is_portrait = st.session_state.get("ui_orientation", "Landscape (16:9)").startswith("Portrait")
     _margin_max = 1600 if _is_portrait else 900
     # Clamp the stored value so it never exceeds the current slider range
     _stored_margin = st.session_state.get("ui_bottom_margin", 80 if _is_portrait else 30)
     st.session_state["ui_bottom_margin"] = max(10, min(int(_stored_margin), _margin_max))
     bottom_margin = st.slider(
-        "Bottom Margin",
+        t("Bottom Margin"),
         min_value=10,
         max_value=_margin_max,
-        help="Pixels from the bottom of the video frame. Portrait mode allows larger values.",
+        help=t("Pixels from the bottom of the video frame. Portrait mode allows larger values."),
         key="ui_bottom_margin",
     )
 
 
-    st.caption("Style settings apply to burned subtitles. Soft subtitle appearance depends on the video player.")
-    st.caption("Bilingual subtitles use the source text on top and the selected target language on the bottom.")
-    st.caption("Auto Detect uses Whisper language detection.")
-    st.caption("Manual source language is used as a hint and may be overridden if Whisper detects a different language.")
-    st.caption("If source and target languages match, bilingual output is automatically downgraded to single-language subtitles.")
-    st.caption("If source and target languages match, translation is skipped and the Whisper transcript is used directly.")
-    st.caption("Available presets depend on fonts installed on your system. If a font is not installed, FFmpeg may fall back to another font.")
+    st.caption(t("Style settings apply to burned subtitles. Soft subtitle appearance depends on the video player."))
+    st.caption(t("Bilingual subtitles use the source text on top and the selected target language on the bottom."))
+    st.caption(t("Auto Detect uses Whisper language detection."))
+    st.caption(t("Manual source language is used as a hint and may be overridden if Whisper detects a different language."))
+    st.caption(t("If source and target languages match, bilingual output is automatically downgraded to single-language subtitles."))
+    st.caption(t("If source and target languages match, translation is skipped and the Whisper transcript is used directly."))
+    st.caption(t("Available presets depend on fonts installed on your system. If a font is not installed, FFmpeg may fall back to another font."))
 
 logs_placeholder = st.empty()
 result_placeholder = st.empty()
@@ -378,27 +427,12 @@ def append_progress(update: dict):
     st.session_state.job_progress = percent
     st.session_state.job_progress_stage = stage
     st.session_state.job_progress_detail = detail
-    progress_bar_placeholder.progress(percent / 100.0)
-
-    stage_labels = {
-        "start": "Preparing job",
-        "transcribe": "Step 1/4: Transcribing audio",
-        "translate": "Step 2/4: Translating subtitles",
-        "write_srt": "Step 3/4: Writing subtitle file",
-        "render": "Step 4/4: Rendering video",
-        "done": "Completed",
-        "failed": "Failed",
-    }
-    label = stage_labels.get(stage, "Processing")
-    if detail:
-        progress_text_placeholder.caption(f"{label} - {detail}")
-    else:
-        progress_text_placeholder.caption(label)
+    render_progress()
 
 
 def render_progress():
     stage = st.session_state.job_progress_stage
-    detail = st.session_state.job_progress_detail
+    detail = translate_detail(st.session_state.job_progress_detail, st.session_state.ui_language)
     percent = st.session_state.job_progress
     if percent <= 0 and not stage and not detail:
         return
@@ -413,7 +447,7 @@ def render_progress():
         "done": "Completed",
         "failed": "Failed",
     }
-    label = stage_labels.get(stage, "Processing")
+    label = t(stage_labels.get(stage, "Processing"))
     if detail:
         progress_text_placeholder.caption(f"{label} - {detail}")
     else:
@@ -434,22 +468,24 @@ def render_result_file(label: str, path_value: str | None, mime: str):
         return
 
     file_path = Path(path_value)
+    label = t(label)
     if not file_path.exists():
-        st.warning(f"{label} file not found: {path_value}")
+        st.warning(t("{label} file not found: {path}", label=label, path=path_value))
         return
 
     file_size = human_file_size(file_path.stat().st_size)
     st.markdown(f"**{label}**")
-    st.write("Name:", file_path.name)
-    st.write("Size:", file_size)
+    st.write(t("Name:"), file_path.name)
+    st.write(t("Size:"), file_size)
     st.code(str(file_path))
 
     with file_path.open("rb") as file_handle:
         st.download_button(
-            label=f"Download {label}",
+            label=t("Download {label}", label=label),
             data=file_handle.read(),
             file_name=file_path.name,
             mime=mime,
+            key=f"download_{file_path}",
         )
 
 
@@ -460,11 +496,11 @@ def resolve_input_video_path(
 ) -> tuple[str | None, str | None]:
     if selected_input_source == "upload":
         if uploaded_video is None:
-            return None, "Upload a video first."
+            return None, t("Upload a video first.")
 
         suffix = Path(uploaded_video.name).suffix.lower()
         if suffix not in SUPPORTED_VIDEO_EXTENSIONS:
-            return None, f"Unsupported video format: {suffix or 'unknown'}"
+            return None, t("Unsupported video format: {suffix}", suffix=suffix or t("unknown"))
 
         uploads_dir = Path(tempfile.gettempdir()) / "video_translate_tool_uploads"
         uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -474,19 +510,19 @@ def resolve_input_video_path(
 
     raw_path = local_path_value.strip().strip('"').strip("'")
     if not raw_path:
-        return None, "Enter a local video path first."
+        return None, t("Enter a local video path first.")
 
     try:
         resolved_path = Path(raw_path).expanduser().resolve()
     except OSError as exc:
-        return None, f"Invalid local video path: {exc}"
+        return None, t("Invalid local video path: {error}", error=exc)
 
     if not resolved_path.exists():
-        return None, f"Local video file not found: {resolved_path}"
+        return None, t("Local video file not found: {path}", path=resolved_path)
     if not resolved_path.is_file():
-        return None, f"Local video path is not a file: {resolved_path}"
+        return None, t("Local video path is not a file: {path}", path=resolved_path)
     if resolved_path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
-        return None, f"Unsupported video format: {resolved_path.suffix or 'unknown'}"
+        return None, t("Unsupported video format: {suffix}", suffix=resolved_path.suffix or t("unknown"))
 
     return str(resolved_path), None
 
@@ -499,16 +535,16 @@ def resolve_output_directory(
     if selected_output_dir_source == "manual":
         raw_path = manual_output_dir.strip()
         if not raw_path:
-            return None, "Enter an output directory first."
+            return None, t("Enter an output directory first.")
     else:
         raw_path = selected_output_dir.strip()
         if not raw_path:
-            return None, "Choose an output folder first."
+            return None, t("Choose an output folder first.")
 
     try:
         resolved_path = Path(raw_path).expanduser().resolve()
     except OSError as exc:
-        return None, f"Invalid output directory: {exc}"
+        return None, t("Invalid output directory: {error}", error=exc)
 
     return str(resolved_path), None
 
@@ -519,15 +555,15 @@ def render_job_result():
         return
 
     if result["success"]:
-        result_placeholder.success("Completed")
+        result_placeholder.success(t("Completed"))
         output_video_path = Path(result["output_video"]).resolve() if result["output_video"] else None
         output_subtitle_path = Path(result["output_srt"]).resolve() if result["output_srt"] else None
 
-        st.subheader("Outputs")
+        st.subheader(t("Outputs"))
         render_result_file("Video", str(output_video_path) if output_video_path else None, "video/mp4")
         render_result_file("Subtitle", str(output_subtitle_path) if output_subtitle_path else None, "application/x-subrip")
     else:
-        result_placeholder.error(result["error"] or "Job failed")
+        result_placeholder.error(translate_detail(result["error"] or "Job failed", st.session_state.ui_language))
 
 
 if st.session_state.job_logs:
@@ -535,7 +571,7 @@ if st.session_state.job_logs:
 render_progress()
 
 
-if st.button("Start", type="primary"):
+if st.button(t("Start"), type="primary", key="start_job"):
     st.session_state.job_logs = []
     st.session_state.job_result = None
     st.session_state.job_progress = 0.0
@@ -561,9 +597,9 @@ if st.button("Start", type="primary"):
     srt_error = None
     if job_mode == "burn_only":
         if not external_srt_path.strip():
-            srt_error = "Enter the path to your SRT file."
+            srt_error = t("Enter the path to your SRT file.")
         elif not Path(external_srt_path.strip()).exists():
-            srt_error = f"SRT file not found: {external_srt_path.strip()}"
+            srt_error = t("SRT file not found: {path}", path=external_srt_path.strip())
 
     if input_error:
         result_placeholder.error(input_error)
@@ -639,7 +675,7 @@ if not st.session_state.job_result:
     _ref_h = 1920 if _pv_is_portrait else 1080
     _pv_pad = max(1, round((_pv_margin / _ref_h) * 100))
     _pv_px  = _pv_font_size + 4
-    st.markdown("#### 🎥 Subtitle Style Preview")
+    st.markdown(t("#### 🎥 Subtitle Style Preview"))
     st.markdown(
         f"""
 <div style="
@@ -666,11 +702,12 @@ if not st.session_state.job_result:
     font-size: {_pv_px}px;
     text-shadow: {_pv_shadow};
     line-height: 1.6;
-  ">Sample Subtitle Text</span>
+  ">{t("Sample Subtitle Text")}</span>
   </div>
 </div>""",
         unsafe_allow_html=True,
     )
     st.caption(
-        f"Font: {_pv_font} · Size: {_pv_font_size} · Margin: {_pv_margin}px · Preview is approximate."
+        t("Font: {font} · Size: {size} · Margin: {margin}px · Preview is approximate.",
+          font=_pv_font, size=_pv_font_size, margin=_pv_margin)
     )

@@ -1,4 +1,4 @@
 openai
 faster-whisper
 budoux
-streamlit
+streamlit>=1.55.0
