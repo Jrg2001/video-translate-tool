@@ -6,7 +6,12 @@ import re
 ZH_CN = {
     "Video Translate Tool": "视频字幕翻译工具",
     "Local video translation with single or bilingual subtitle output.": "本地视频转写与翻译，支持单语和双语字幕输出。",
-    "Job Settings": "任务设置",
+    "#### 🎬 New Job": "#### 🎬 新建任务",
+    "Settings": "设置",
+    "📁 Output Settings": "📁 输出设置",
+    "🎨 Subtitle Style": "🎨 字幕样式",
+    "⚙️ Advanced Settings": "⚙️ 高级设置",
+    "ℹ️ Usage Notes": "ℹ️ 使用说明",
     "Job Mode": "任务模式",
     "Full Pipeline (Transcribe → Translate → Burn)": "完整流程（转写 → 翻译 → 生成视频）",
     "Burn Existing SRT": "使用已有 SRT 烧录字幕",

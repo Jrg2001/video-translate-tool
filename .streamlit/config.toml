@@ -1,2 +1,15 @@
 [server]
 maxUploadSize = 2048
+
+[client]
+# Hide the "Deploy" button and developer menu items; this is a local tool.
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+primaryColor = "#4F6BED"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F6FB"
+textColor = "#1F2937"
+borderColor = "#E3E7F0"
+baseRadius = "medium"
