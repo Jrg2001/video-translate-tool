@@ -132,10 +132,14 @@ docker compose up -d
 ### 命令行脚本
 
 ```powershell
-python transfer_video_burn.py
+# 最简用法：自动识别源语言，生成中文硬字幕视频
+python transfer_video_burn.py path/to/video.mp4
+
+# 指定目标语言、双语字幕和输出目录
+python transfer_video_burn.py path/to/video.mp4 --target-language en --subtitle-mode bilingual --output-dir my_outputs
 ```
 
-脚本默认示例会把输出写入 `D:\transfer\outputs`。
+输出默认写入项目目录下的 `outputs/`。运行 `python transfer_video_burn.py --help` 查看全部参数。
 
 ### Streamlit 网页界面
 
@@ -279,3 +283,7 @@ streamlit run app.py
 如需在 Docker 中启用 GPU 加速，请将基础镜像替换为合适的 `nvidia/cuda` 镜像，在宿主机安装 NVIDIA Container Toolkit，并使用 `--gpus all` 运行容器。
 
 这是面向 NVIDIA GPU 服务器环境的计划改进项。
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。
